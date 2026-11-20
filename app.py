@@ -124,6 +124,7 @@ class AppState:
             self.source_ready = False
             self.source_duration = 0.0
             self.source_filename = ""
+            self.source_title = ""
             self.timeframes = []
             self.draft_clips = []
             self.approved_clips = []
@@ -167,6 +168,7 @@ class AppState:
                 "source_ready": self.source_ready,
                 "source_duration": self.source_duration,
                 "source_filename": self.source_filename,
+                "source_title": getattr(self, "source_title", ""),
                 "timeframes": self.timeframes,
                 "draft_clips": self.draft_clips,
                 "approved_clips": self.approved_clips,
@@ -187,6 +189,11 @@ class AppState:
             }
 
 state = AppState()
+if (TEMP_DIR / "source_title.txt").exists():
+    try:
+        state.source_title = (TEMP_DIR / "source_title.txt").read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
 
 def generate_thumbnail(video_path: Path, thumb_path: Path) -> bool:
     if thumb_path.exists() and thumb_path.stat().st_size > 0:
@@ -293,6 +300,37 @@ def run_scan_pipeline(url: str, num_detect: int = 15, resume: bool = False):
         if resume:
             state.log(f"⚡ RESUME MODE: Starting scan after {start_after_sec:.1f}s (New clips start at #{start_index})")
         state.log("=" * 60)
+
+        # Probe source video title for context-aware clipping & niche metadata
+        source_title = ""
+        title_file = TEMP_DIR / "source_title.txt"
+        if url.startswith("http"):
+            try:
+                title_proc = subprocess.run(
+                    [YTDLP_PATH, "--print", "title", "--no-warnings", url],
+                    capture_output=True, text=True, timeout=8
+                )
+                if title_proc.returncode == 0 and title_proc.stdout.strip():
+                    source_title = title_proc.stdout.strip()
+            except Exception:
+                pass
+        if not source_title and title_file.exists():
+            try:
+                source_title = title_file.read_text(encoding="utf-8").strip()
+            except Exception:
+                pass
+        if not source_title:
+            source_title = Path(url).stem.replace("_", " ").title()
+
+        try:
+            title_file.write_text(source_title, encoding="utf-8")
+        except Exception:
+            pass
+
+        with state.lock:
+            state.source_title = source_title
+
+        state.log(f"🎬 Video Topic Detected: \"{source_title}\"")
 
         source_mp4 = TEMP_DIR / "source.mp4"
 
@@ -438,6 +476,7 @@ def run_scan_pipeline(url: str, num_detect: int = 15, resume: bool = False):
             PYTHON_EXE,
             str(SCRIPTS_DIR / "detect_hooks.py"),
             "--transcript", str(transcript_path),
+            "--video-title", getattr(state, "source_title", ""),
             "--top-k", str(num_detect),
             "--min-duration", "25",
             "--max-duration", "55",
@@ -943,10 +982,16 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
                 hook = data.get("hook", "")
                 clip_id = int(data.get("id", 1))
                 variation = int(data.get("variation", 0)) + 1
+                v_title = data.get("video_title") or getattr(state, "source_title", "")
+                if not v_title and (TEMP_DIR / "source_title.txt").exists():
+                    try:
+                        v_title = (TEMP_DIR / "source_title.txt").read_text(encoding="utf-8").strip()
+                    except Exception:
+                        pass
             except Exception:
-                text, hook, clip_id, variation = "", "", 1, 1
+                text, hook, clip_id, variation, v_title = "", "", 1, 1, ""
 
-            new_title, new_hashtags = generate_clip_metadata(text, hook, clip_id, variation)
+            new_title, new_hashtags = generate_clip_metadata(text, hook, clip_id, variation, video_title=v_title)
 
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
@@ -1630,6 +1675,7 @@ HTML_PAGE = """<!DOCTYPE html>
               <span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>
               <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-200">Source Video Preview</h2>
               <span id="sourceDurationBadge" class="text-[11px] bg-zinc-800 text-zinc-400 px-2 py-0.5 rounded-md hidden"></span>
+              <span id="sourceTitleBadge" class="text-[11px] text-indigo-300 font-semibold truncate max-w-[280px] bg-indigo-950/40 px-2.5 py-0.5 rounded-md border border-indigo-800/40 hidden items-center space-x-1.5"><i class="fa-solid fa-film text-[10px] text-indigo-400"></i><span id="sourceTitleText"></span></span>
             </div>
             <!-- Delete Source Button -->
             <button id="deleteSourceBtn" onclick="deleteSourceVideo()" class="hidden text-xs px-2.5 py-1 rounded-lg border border-red-900/50 bg-red-950/30 text-red-400 hover:bg-red-900/40 hover:text-red-200 transition-all flex items-center space-x-1.5 cursor-pointer">
@@ -2293,6 +2339,19 @@ HTML_PAGE = """<!DOCTYPE html>
           document.getElementById('resumeTimeLabel').textContent = `${pad(h)}:${pad(m)}:${pad(s)} (Clip #${data.last_clipped_num + 1}+)`;
         }
 
+        // Display detected video title
+        if (data.source_title) {
+          window.__sourceTitle = data.source_title;
+          const badge = document.getElementById('sourceTitleBadge');
+          const titleText = document.getElementById('sourceTitleText');
+          if (badge && titleText) {
+            titleText.textContent = data.source_title;
+            badge.title = data.source_title;
+            badge.classList.remove('hidden');
+            badge.classList.add('flex');
+          }
+        }
+
         document.getElementById('stageMsg').textContent = data.stage_message;
         document.getElementById('progressPct').textContent = data.progress_pct + '%';
         document.getElementById('progressBar').style.width = data.progress_pct + '%';
@@ -2492,7 +2551,13 @@ HTML_PAGE = """<!DOCTYPE html>
         const res = await fetch('/api/regenerate-metadata', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: tf.full_text || tf.hook, hook: tf.hook, id: tf.id, variation: tf.variation })
+          body: JSON.stringify({ 
+            text: tf.full_text || tf.hook, 
+            hook: tf.hook, 
+            id: tf.id, 
+            variation: tf.variation,
+            video_title: window.__sourceTitle || ''
+          })
         });
         const data = await res.json();
         if (res.ok) {
@@ -2517,7 +2582,13 @@ HTML_PAGE = """<!DOCTYPE html>
         const res = await fetch('/api/regenerate-metadata', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: draft.full_text || draft.hook, hook: draft.hook, id: draft.id, variation: draft.variation })
+          body: JSON.stringify({ 
+            text: draft.full_text || draft.hook, 
+            hook: draft.hook, 
+            id: draft.id, 
+            variation: draft.variation,
+            video_title: window.__sourceTitle || ''
+          })
         });
         const data = await res.json();
         if (res.ok) {

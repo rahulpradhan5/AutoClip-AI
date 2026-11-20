@@ -203,6 +203,7 @@ def find_viral_segments(
     start_after_sec: float = 0.0,
     start_index: int = 1,
     use_ollama: bool = True,
+    video_title: str = "",
 ) -> list[dict]:
     with open(transcript_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -295,7 +296,7 @@ def find_viral_segments(
     for offset, c in enumerate(selected):
         c_idx = start_index + offset
         c["id"] = c_idx
-        title, hashtags = generate_clip_metadata(c["text"], c["hook"], c_idx)
+        title, hashtags = generate_clip_metadata(c["text"], c["hook"], c_idx, 0, video_title=video_title)
         c["title"] = title
         c["hashtags"] = hashtags
 
@@ -316,6 +317,7 @@ def find_viral_segments(
 def main():
     parser = argparse.ArgumentParser(description="Find high-intensity viral moments from transcript.")
     parser.add_argument("--transcript", default="./temp_work/transcript.json", help="Path to transcript JSON")
+    parser.add_argument("--video-title", default="", help="Source video title for context-aware clipping & niche metadata")
     parser.add_argument("--top-k", type=int, default=15, help="Number of viral clips to detect")
     parser.add_argument("--min-duration", type=float, default=25.0, help="Minimum clip duration in seconds")
     parser.add_argument("--max-duration", type=float, default=55.0, help="Maximum clip duration in seconds")
@@ -333,6 +335,7 @@ def main():
         start_after_sec=args.start_after,
         start_index=args.start_index,
         use_ollama=not args.no_ollama,
+        video_title=args.video_title,
     )
     output_payload = {
         "total": len(candidates),
