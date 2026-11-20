@@ -62,3 +62,7 @@ draft_clips/*.txt
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Local helper scripts
+push.bat
+
