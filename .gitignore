@@ -1,0 +1,64 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+.env
+
+# Agent & IDE Configurations
+.agent/
+.vscode/
+.idea/
+
+# Temporary Processing Directory (Keep empty directory via .gitkeep)
+temp_work/*
+!temp_work/.gitkeep
+
+# Draft Clips Directory (Keep empty directory via .gitkeep)
+draft_clips/*
+!draft_clips/.gitkeep
+
+# Final Approved Clips Directory (Keep empty directory via .gitkeep)
+final_clips/*
+!final_clips/.gitkeep
+
+# Heavy Media Files (Never commit raw video or rendered audio/video)
+*.mp4
+*.mkv
+*.webm
+*.avi
+*.mov
+*.mp3
+*.wav
+*.m4a
+*.ass
+*.srt
+*.vtt
+*.json3
+*.jpg
+*.jpeg
+*.png
+*.gif
+
+# Exclude final metadata txt files so users generate their own
+final_clips/*.txt
+draft_clips/*.txt
+
+# Allow documentation assets if added in future
+!assets/*.png
+!assets/*.jpg
+
+# Logs and Cache
+*.log
+*.sqlite3
+*.db
+
+# OS Generated
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,13 @@
+# ==============================================================================
+# UNIVERSAL CLIPPER - SIMPLE INPUT FILE
+# ==============================================================================
+# Just change the URL and the number of clips below, then save this file.
+#
+# Ways to run:
+#   1. In Chat: Simply say "clip" or "run CLIP_INPUT.txt"
+#   2. In Terminal: .\.venv\Scripts\python.exe clip.py
+#   3. One-Click: Double click "clip.bat" or run .\clip.bat
+# ==============================================================================
+
+URL: https://www.youtube.com/watch?v=qSyo5d-dVzA
+CLIPS: 3
