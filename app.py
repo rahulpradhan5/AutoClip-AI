@@ -3033,7 +3033,7 @@ HTML_PAGE = """<!DOCTYPE html>
         try {
           parsed = JSON.parse(str);
         } catch (err) {
-          alert('Invalid JSON formatting: ' + err.message + '\nPlease check your credentials syntax.');
+          alert('Invalid JSON formatting: ' + err.message + '\\nPlease check your credentials syntax.');
           return false;
         }
 
@@ -3189,7 +3189,7 @@ HTML_PAGE = """<!DOCTYPE html>
       if (rawText.includes('"installed"') || (rawText.includes('"client_id"') && rawText.includes('"client_secret"') && !rawText.includes('"refresh_token"'))) {
         const ok = await saveOAuthSecretsData(rawText);
         if (ok) {
-          alert('✓ Detected OAuth Client Credentials! Saved to client_secrets.json.\n\nNow click "Sign in with Google & Connect YouTube" to finish connecting.');
+          alert('✓ Detected OAuth Client Credentials! Saved to client_secrets.json.\\n\\nNow click "Sign in with Google & Connect YouTube" to finish connecting.');
         }
         return;
       }
@@ -3217,7 +3217,7 @@ HTML_PAGE = """<!DOCTYPE html>
           alert('Invalid token or connection failed: ' + (data.status?.error || 'Unknown error'));
         }
       } catch (e) {
-        alert('Error parsing token JSON: ' + e.message + '\n\nTip: If you downloaded client_secret_*.json from Google Cloud Console, paste it in "Step 1: Save Credentials", not here.');
+        alert('Error parsing token JSON: ' + e.message + '\\n\\nTip: If you downloaded client_secret_*.json from Google Cloud Console, paste it in "Step 1: Save Credentials", not here.');
       }
     }
 
