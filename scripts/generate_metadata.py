@@ -140,7 +140,7 @@ def clean_video_topic(raw_title: str) -> str:
 
 
 def get_cached_video_title() -> str:
-    """Reads cached video title if available from temp_work."""
+    """Reads cached video title if available from temp_work or final_clips."""
     for p in [Path("temp_work/source_title.txt"), Path("temp/source_title.txt")]:
         if p.exists():
             try:
@@ -149,6 +149,17 @@ def get_cached_video_title() -> str:
                     return title
             except Exception:
                 pass
+    # Fallback to inspecting any approved clip txt file
+    for p in Path("final_clips").glob("*.txt"):
+        try:
+            content = p.read_text(encoding="utf-8")
+            for line in content.splitlines():
+                if "SOURCE VIDEO:" in line:
+                    t = line.split("SOURCE VIDEO:", 1)[1].strip()
+                    if t and "Gaming" not in t:
+                        return t
+        except Exception:
+            pass
     return ""
 
 
@@ -255,72 +266,81 @@ def format_hashtag(raw_tag: str) -> str:
     return f"#{capitalized}"
 
 
+GENRE_RANKING_TAGS = {
+    "gaming": ["#EpicPlay", "#GamerLife", "#ClutchMoment", "#GamingShorts", "#GamerMoments", "#GamingClips", "#GamingDaily"],
+    "podcast": ["#PodcastClips", "#LifeAdvice", "#DeepTruth", "#MindsetMatters", "#Wisdom", "#HardTruths"],
+    "comedy": ["#FunnyMoments", "#EpicFail", "#ReactionShorts", "#GamingMemes", "#PureChaos", "#TryNotToLaugh"],
+    "crime": ["#HighStakes", "#CrimeScene", "#PlotTwist", "#Escape", "#IntenseMoment", "#RobberyGoneWrong"],
+    "general": ["#ViralVideo", "#MustWatch", "#PlotTwist", "#ExplorePage", "#TrendingNow"]
+}
+
+
+def detect_video_genre(video_title: str, text: str = "") -> str:
+    combined = f"{video_title} {text}".lower()
+    if re.search(r"\b(gta|grand theft auto|vice city|rockstar|gameplay|walkthrough|playthrough|game|gaming|boss|ps5|ps4|xbox|pc|steam|fortnite|minecraft|rdr|red dead|roblox|valorant|cod|warzone|apex|elden ring)\b", combined):
+        return "gaming"
+    if re.search(r"\b(podcast|interview|joe rogan|lex fridman|huberman|discussion|talk show)\b", combined):
+        return "podcast"
+    if re.search(r"\b(reaction|reacting|try not to laugh|meme|funny moments|comedy|prank)\b", combined):
+        return "comedy"
+    if re.search(r"\b(crime|robbery|police chase|heist|investigation|court|jail|cop)\b", combined):
+        return "crime"
+    return "gaming"
+
+
 def get_live_trending_hashtags(text: str, hook: str, variation: int = 0, video_title: str = "") -> List[str]:
-    """Crawls live YouTube trending autocomplete hashtags for the clip's niche and video topic."""
+    """
+    Crawls live YouTube trending autocomplete hashtags for the clip's niche and video topic.
+    Returns synchronized hashtags combining:
+    1. Primary ranking niche/topic tags crawled live from YouTube (e.g. #Gta6 #Gta6live)
+    2. Genre-specific ranking tags (e.g. #EpicPlay #GamerLife #ClutchMoment)
+    3. Universal high-velocity Shorts boosters (#Shorts #Viral #Trending)
+    """
     if not video_title:
         video_title = get_cached_video_title()
 
     core_topic = clean_video_topic(video_title)
-    queries = extract_search_terms(text, hook, video_title)
+    genre = detect_video_genre(video_title, f"{hook} {text}")
     live_hashtags = []
 
-    # 1. First anchor with primary hashtags for the core video topic
+    # 1. First anchor with primary hashtags for the core video topic directly from live YouTube search
     if core_topic:
         primary_tag = format_hashtag(core_topic)
         if primary_tag and primary_tag not in live_hashtags:
             live_hashtags.append(primary_tag)
+        # Query YouTube suggestion engine for live autocomplete hashtags
         topic_suggested = fetch_youtube_suggestions(f"#{core_topic.replace(' ', '')}")
-        for stag in topic_suggested[:4]:
+        for stag in topic_suggested[:6]:
             fmt = format_hashtag(stag)
             if fmt and fmt not in live_hashtags and len(fmt) > 2:
                 live_hashtags.append(fmt)
 
-    # 2. Query YouTube suggestion engine for live clip action hashtags
-    for q in queries[:2]:
-        for term in q.split()[:2]:
-            if len(term) < 3 or term in STOP_WORDS or (core_topic and term.lower() in core_topic.lower()):
-                continue
-            suggested_tags = fetch_youtube_suggestions(f"#{term}")
-            for stag in suggested_tags:
-                fmt = format_hashtag(stag)
-                if fmt and fmt not in live_hashtags and len(fmt) > 2:
-                    live_hashtags.append(fmt)
-            if len(live_hashtags) >= 8:
-                break
+    # 2. Add genre-ranking tags (e.g. #EpicPlay, #GamerLife, #ClutchMoment for gaming)
+    genre_pool = GENRE_RANKING_TAGS.get(genre, GENRE_RANKING_TAGS["gaming"])
+    rotated_genre = genre_pool[variation % len(genre_pool):] + genre_pool[:variation % len(genre_pool)]
 
-    # 3. Query YouTube autocomplete for related video searches to turn into tags
-    if len(live_hashtags) < 6:
-        for q in queries[:1]:
-            search_phrases = fetch_youtube_suggestions(q)
-            for phrase in search_phrases:
-                fmt = format_hashtag(phrase)
-                if fmt and fmt not in live_hashtags and len(fmt) <= 22:
-                    live_hashtags.append(fmt)
-
-    # 4. If offline or insufficient tags, blend from offline niche rules
-    if len(live_hashtags) < 6:
-        text_lower = f"{hook} {text} {video_title}".lower()
-        for niche, data in OFFLINE_FALLBACK_NICHES.items():
-            for trg in data["triggers"]:
-                if trg in text_lower:
-                    for t in data["tags"]:
-                        if t not in live_hashtags:
-                            live_hashtags.append(t)
-                    break
-
-    # 5. Global Shorts fallback tags
-    fallbacks = ["#Shorts", "#Viral", "#Trending", "#PlotTwist", "#MustWatch", "#FYP", "#Clips", "#ExplorePage"]
-    for fb in fallbacks:
-        if fb not in live_hashtags:
-            live_hashtags.append(fb)
-
-    # Ensure the primary topic tags appear at the front, followed by rotated clip tags
+    # 3. Assemble final list: Topic tags (2) + Genre tags (3) + Boosters (3)
     topic_tags = [t for t in live_hashtags if core_topic and core_topic.replace(' ', '').lower() in t.lower()]
-    other_tags = [t for t in live_hashtags if t not in topic_tags]
+    if not topic_tags and core_topic:
+        topic_tags = [format_hashtag(core_topic)]
 
-    rot_other = other_tags[variation % len(other_tags):] + other_tags[:variation % len(other_tags)] if other_tags else []
-    final_tags = topic_tags[:2] + rot_other
-    return final_tags[:5]
+    final_tags = []
+    # Add top 2 topic-specific tags
+    for t in topic_tags[:2]:
+        if t not in final_tags:
+            final_tags.append(t)
+
+    # Add 3 genre ranking tags
+    for g in rotated_genre[:3]:
+        if g not in final_tags:
+            final_tags.append(g)
+
+    # Add universal discovery boosters
+    for booster in ["#Shorts", "#Viral", "#Trending"]:
+        if booster not in final_tags:
+            final_tags.append(booster)
+
+    return final_tags
 
 
 def generate_live_viral_title(text: str, hook: str, index: int = 1, variation: int = 0, video_title: str = "") -> str:
@@ -531,7 +551,7 @@ def generate_seo_description(
         f"🔍 TRENDING SEARCH KEYWORDS & TOPICS:\n"
         f"{keywords_str}\n\n"
         f"🏷️ HASHTAGS:\n"
-        f"{hashtags_str} #Shorts #Viral #Trending"
+        f"{hashtags_str}"
     )
 
     return description, crawled_keywords
