@@ -132,6 +132,7 @@ class AppState:
             self.current_url = ""
             self.target_clips = 3
             self.subtitle_theme = "hormozi"
+            self.subtitle_position = "bottom"
             self.last_clipped_num = 0
             self.last_clipped_end_sec = 0.0
             self.download_info = {
@@ -169,6 +170,7 @@ class AppState:
                 "current_url": self.current_url,
                 "target_clips": self.target_clips,
                 "subtitle_theme": getattr(self, "subtitle_theme", "hormozi"),
+                "subtitle_position": getattr(self, "subtitle_position", "bottom"),
                 "download_info": dict(self.download_info),
                 "last_clipped_num": max_num,
                 "last_clipped_end_sec": max_end,
@@ -606,6 +608,7 @@ def run_render_worker(selected_moments: list[dict]):
 
             state.log(f"Burning 60 FPS karaoke captions with color grading & unsharp mask...")
             theme_choice = getattr(state, "subtitle_theme", "hormozi")
+            position_choice = getattr(state, "subtitle_position", "bottom")
             captions_cmd = [
                 PYTHON_EXE,
                 str(SCRIPTS_DIR / "render_captions.py"),
@@ -616,6 +619,7 @@ def run_render_worker(selected_moments: list[dict]):
                 "--output", str(draft_clip_path),
                 "--ass-output", str(ass_path),
                 "--theme", theme_choice,
+                "--position", position_choice,
                 "--fps", "60",
             ]
             k_res = subprocess.run(captions_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=dict(os.environ, PYTHONIOENCODING="utf-8"))
@@ -797,13 +801,15 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
             try:
                 data = json.loads(body) if body else {}
                 theme = data.get("theme", "hormozi")
+                position = data.get("position", "bottom")
                 with state.lock:
                     state.subtitle_theme = theme
-                state.log(f"Subtitle style preset switched to: {theme.upper()}")
+                    state.subtitle_position = position
+                state.log(f"Subtitle style updated: {theme.upper()} (Position: {position.upper()})")
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(json.dumps({"success": True, "theme": theme}).encode("utf-8"))
+                self.wfile.write(json.dumps({"success": True, "theme": theme, "position": position}).encode("utf-8"))
                 return
             except Exception as e:
                 self.send_response(HTTPStatus.BAD_REQUEST)
@@ -1104,14 +1110,14 @@ HTML_PAGE = """<!DOCTYPE html>
     .karaoke-word {
       display: inline-block;
       margin: 0 4px;
-      transition: all 0.15s ease-in-out;
+      transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
       font-family: 'Arial Black', Impact, sans-serif;
     }
     .theme-hormozi .word-active {
       color: #FFD700 !important;
-      -webkit-text-stroke: 1.8px #000;
-      text-shadow: 0 3px 6px rgba(0,0,0,0.9);
-      transform: scale(1.08);
+      -webkit-text-stroke: 2px #000;
+      text-shadow: 0 4px 8px rgba(0,0,0,0.9);
+      transform: scale(1.1);
     }
     .theme-hormozi .word-default {
       color: #FFFFFF !important;
@@ -1120,9 +1126,9 @@ HTML_PAGE = """<!DOCTYPE html>
     }
     .theme-mrbeast .word-active {
       color: #33FF00 !important;
-      -webkit-text-stroke: 1.8px #000;
-      text-shadow: 0 3px 6px rgba(0,0,0,0.9);
-      transform: scale(1.08);
+      -webkit-text-stroke: 2px #000;
+      text-shadow: 0 4px 8px rgba(0,0,0,0.9);
+      transform: scale(1.1);
     }
     .theme-mrbeast .word-default {
       color: #FFFFFF !important;
@@ -1131,9 +1137,9 @@ HTML_PAGE = """<!DOCTYPE html>
     }
     .theme-cyber .word-active {
       color: #00FFFF !important;
-      -webkit-text-stroke: 1.8px #000;
-      text-shadow: 0 0 10px rgba(0,255,255,0.7), 0 3px 6px rgba(0,0,0,0.9);
-      transform: scale(1.08);
+      -webkit-text-stroke: 2px #000;
+      text-shadow: 0 0 14px rgba(0,255,255,0.8), 0 4px 8px rgba(0,0,0,0.9);
+      transform: scale(1.1);
     }
     .theme-cyber .word-default {
       color: #FFFFFF !important;
@@ -1142,20 +1148,53 @@ HTML_PAGE = """<!DOCTYPE html>
     }
     .theme-crimson .word-active {
       color: #FF2233 !important;
-      -webkit-text-stroke: 1.8px #000;
-      text-shadow: 0 3px 6px rgba(0,0,0,0.9);
-      transform: scale(1.08);
+      -webkit-text-stroke: 2px #000;
+      text-shadow: 0 0 12px rgba(255,34,51,0.6), 0 4px 8px rgba(0,0,0,0.9);
+      transform: scale(1.1);
     }
     .theme-crimson .word-default {
       color: #FFFFFF !important;
       -webkit-text-stroke: 1.5px #000;
       text-shadow: 0 2px 4px rgba(0,0,0,0.8);
     }
+    .theme-sunset .word-active {
+      color: #FF7700 !important;
+      -webkit-text-stroke: 2px #000;
+      text-shadow: 0 0 12px rgba(255,119,0,0.7), 0 4px 8px rgba(0,0,0,0.9);
+      transform: scale(1.1);
+    }
+    .theme-sunset .word-default {
+      color: #FFFFFF !important;
+      -webkit-text-stroke: 1.5px #000;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+    }
+    .theme-bubblegum .word-active {
+      color: #FF1493 !important;
+      -webkit-text-stroke: 2px #000;
+      text-shadow: 0 0 12px rgba(255,20,147,0.7), 0 4px 8px rgba(0,0,0,0.9);
+      transform: scale(1.1);
+    }
+    .theme-bubblegum .word-default {
+      color: #FFFFFF !important;
+      -webkit-text-stroke: 1.5px #000;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+    }
+    .theme-violet .word-active {
+      color: #BF00FF !important;
+      -webkit-text-stroke: 2px #000;
+      text-shadow: 0 0 12px rgba(191,0,255,0.7), 0 4px 8px rgba(0,0,0,0.9);
+      transform: scale(1.1);
+    }
+    .theme-violet .word-default {
+      color: #FFFFFF !important;
+      -webkit-text-stroke: 1.5px #000;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+    }
     .theme-classic_white .word-active {
       color: #FFFFFF !important;
-      -webkit-text-stroke: 1.2px #000;
-      text-shadow: 0 2px 5px rgba(0,0,0,0.8);
-      transform: scale(1.04);
+      -webkit-text-stroke: 1.5px #000;
+      text-shadow: 0 3px 6px rgba(0,0,0,0.9);
+      transform: scale(1.05);
       text-decoration: underline;
     }
     .theme-classic_white .word-default {
@@ -1193,128 +1232,58 @@ HTML_PAGE = """<!DOCTYPE html>
   <!-- Main Container -->
   <main class="flex-1 max-w-[1700px] w-full mx-auto p-6 space-y-6">
 
-    <!-- Studio Control Deck: 2 Clean Sections (Ingestion & Subtitle Studio) -->
-    <div class="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-2xl backdrop-blur space-y-4">
-      <div class="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
-        
-        <!-- LEFT: URL & Extraction Settings (7 cols) -->
-        <div class="lg:col-span-7 flex flex-col justify-between space-y-3.5">
-          <!-- Video Input -->
-          <div>
-            <div class="flex items-center justify-between mb-1.5">
-              <label class="text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center space-x-1.5">
-                <i class="fa-brands fa-youtube text-red-500"></i>
-                <span>Video / Stream / Podcast Source URL</span>
-              </label>
-              <button type="button" onclick="pasteVideoUrl()" class="text-[11px] text-indigo-400 hover:text-indigo-300 flex items-center space-x-1 transition-colors cursor-pointer">
-                <i class="fa-regular fa-paste"></i>
-                <span>Paste Link</span>
-              </button>
-            </div>
-            <div class="relative">
-              <input type="text" id="videoUrlInput" 
-                placeholder="https://www.youtube.com/watch?v=..." 
-                value="https://www.youtube.com/watch?v=BGUTv2K_SWs"
-                class="w-full bg-zinc-950 border border-zinc-700/80 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 rounded-xl px-4 py-2.5 text-xs text-white placeholder-zinc-500 transition-all font-mono">
-            </div>
+    <!-- SECTION 1: Video Ingestion & Pipeline Launcher (Clean, Full-Width) -->
+    <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-4">
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <label class="text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center space-x-2">
+            <i class="fa-brands fa-youtube text-red-500 text-sm"></i>
+            <span>Video / Livestream / Reel Source Link</span>
+          </label>
+          <div class="flex items-center space-x-3 text-xs">
+            <span class="text-zinc-500 text-[11px] hidden sm:inline"><i class="fa-solid fa-bolt text-amber-400 mr-1"></i>Supports YouTube, Podcasts & Local Files</span>
+            <button type="button" onclick="pasteVideoUrl()" class="text-indigo-400 hover:text-indigo-300 font-medium flex items-center space-x-1 cursor-pointer">
+              <i class="fa-regular fa-paste"></i>
+              <span>Paste from Clipboard</span>
+            </button>
           </div>
+        </div>
+        <div class="relative">
+          <input type="text" id="videoUrlInput" 
+            placeholder="Paste YouTube video or livestream URL (e.g., https://www.youtube.com/watch?v=...)" 
+            value="https://www.youtube.com/watch?v=BGUTv2K_SWs"
+            class="w-full bg-zinc-950 border border-zinc-700/80 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 rounded-xl px-4 py-3 text-sm text-white placeholder-zinc-500 transition-all font-mono">
+        </div>
+      </div>
 
-          <!-- Bottom row of Left Panel: Target Clips, Resume, Scan CTA -->
-          <div class="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end pt-1">
-            <div class="sm:col-span-4">
-              <label class="block text-[11px] font-semibold text-zinc-400 uppercase tracking-wider mb-1">
-                Target Clips Count
-              </label>
-              <div class="flex items-center space-x-1 bg-zinc-950 border border-zinc-800 rounded-xl p-1">
-                <button type="button" onclick="setClipCount(3)" class="clip-count-btn flex-1 py-1 text-xs rounded-lg font-semibold bg-indigo-600 text-white" data-val="3">3</button>
-                <button type="button" onclick="setClipCount(5)" class="clip-count-btn flex-1 py-1 text-xs rounded-lg font-semibold text-zinc-400 hover:text-white" data-val="5">5</button>
-                <button type="button" onclick="setClipCount(10)" class="clip-count-btn flex-1 py-1 text-xs rounded-lg font-semibold text-zinc-400 hover:text-white" data-val="10">10</button>
-                <input type="number" id="numClipsInput" value="3" min="1" max="25" class="w-10 bg-transparent text-center text-xs text-white font-bold border-l border-zinc-800 focus:outline-none">
-              </div>
-            </div>
-
-            <div class="sm:col-span-8 flex flex-col justify-end space-y-1.5">
-              <button id="scanBtn" onclick="scanVideo()" 
-                class="w-full bg-gradient-to-r from-indigo-600 via-indigo-500 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold text-sm px-5 py-2.5 rounded-xl shadow-lg shadow-indigo-600/30 flex items-center justify-center space-x-2 transition-all active:scale-[0.98] cursor-pointer">
-                <i class="fa-solid fa-radar text-indigo-200"></i>
-                <span>Scan & Detect Viral Hooks</span>
-              </button>
-              
-              <div class="flex items-center justify-between text-[11px] text-zinc-400 px-1">
-                <label class="flex items-center space-x-1.5 cursor-pointer">
-                  <input type="checkbox" id="resumeCheckbox" class="w-3.5 h-3.5 rounded text-amber-500 focus:ring-amber-400 bg-zinc-950 border-zinc-700">
-                  <span>Resume after last clip</span>
-                </label>
-                <span class="text-amber-400 font-mono text-[11px]" id="resumeTimeLabel">00:00</span>
-              </div>
+      <!-- Action Controls Bar -->
+      <div class="flex flex-wrap items-center justify-between gap-4 pt-1">
+        <!-- Target Clips Picker -->
+        <div class="flex items-center space-x-3">
+          <span class="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Clips to Extract:</span>
+          <div class="flex items-center space-x-1.5 bg-zinc-950 border border-zinc-800 rounded-xl p-1">
+            <button type="button" onclick="setClipCount(3)" class="clip-count-btn px-3 py-1.5 text-xs rounded-lg font-bold bg-indigo-600 text-white cursor-pointer" data-val="3">3 Clips</button>
+            <button type="button" onclick="setClipCount(5)" class="clip-count-btn px-3 py-1.5 text-xs rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer" data-val="5">5</button>
+            <button type="button" onclick="setClipCount(8)" class="clip-count-btn px-3 py-1.5 text-xs rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer" data-val="8">8</button>
+            <button type="button" onclick="setClipCount(12)" class="clip-count-btn px-3 py-1.5 text-xs rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer" data-val="12">12</button>
+            <div class="flex items-center pl-1 border-l border-zinc-800">
+              <input type="number" id="numClipsInput" value="3" min="1" max="25" class="w-12 bg-transparent text-center text-xs text-white font-bold focus:outline-none" title="Custom count">
             </div>
           </div>
         </div>
 
-        <!-- RIGHT: Captions Aesthetic & Dynamic Live Preview (5 cols) -->
-        <div class="lg:col-span-5 bg-zinc-950/80 border border-zinc-800/80 rounded-xl p-3.5 flex flex-col justify-between">
-          <div class="flex items-center justify-between mb-2">
-            <span class="text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center space-x-1.5">
-              <i class="fa-solid fa-closed-captioning text-amber-400"></i>
-              <span>Captions Style & Live Preview</span>
-            </span>
-            <span id="activeStyleBadge" class="text-[10px] font-mono px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-400 border border-amber-500/20">Hormozi Gold</span>
-          </div>
+        <!-- Resume Checkbox -->
+        <label class="flex items-center space-x-2 text-xs text-zinc-300 cursor-pointer bg-zinc-950/80 px-3 py-2 rounded-xl border border-zinc-800/80 hover:border-zinc-700 transition-colors">
+          <input type="checkbox" id="resumeCheckbox" class="w-4 h-4 rounded text-amber-500 focus:ring-amber-400 bg-zinc-900 border-zinc-700">
+          <span>Resume from last clip (<b id="resumeTimeLabel" class="text-amber-400 font-mono">00:00</b>)</span>
+        </label>
 
-          <!-- Hidden select for compatibility -->
-          <select id="subtitleThemeSelect" class="hidden">
-            <option value="hormozi" selected>Hormozi Gold</option>
-            <option value="mrbeast">MrBeast Lime</option>
-            <option value="cyber">Cyber Cyan</option>
-            <option value="crimson">Crimson Red</option>
-            <option value="classic_white">Classic White</option>
-          </select>
-
-          <!-- Style Selection Pills -->
-          <div class="grid grid-cols-5 gap-1.5 mb-2.5" id="stylePillsGroup">
-            <button type="button" onclick="selectSubtitleTheme('hormozi')" data-theme="hormozi"
-              class="theme-pill px-1 py-1.5 rounded-lg text-center text-[10px] font-bold border transition-all bg-indigo-600/20 border-indigo-500 text-white shadow-sm ring-1 ring-indigo-500/50 cursor-pointer">
-              <span class="block w-2.5 h-2.5 rounded-full bg-[#FFD700] mx-auto mb-1 shadow-sm"></span>
-              Hormozi
-            </button>
-            <button type="button" onclick="selectSubtitleTheme('mrbeast')" data-theme="mrbeast"
-              class="theme-pill px-1 py-1.5 rounded-lg text-center text-[10px] font-bold border transition-all bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700 cursor-pointer">
-              <span class="block w-2.5 h-2.5 rounded-full bg-[#33FF00] mx-auto mb-1"></span>
-              MrBeast
-            </button>
-            <button type="button" onclick="selectSubtitleTheme('cyber')" data-theme="cyber"
-              class="theme-pill px-1 py-1.5 rounded-lg text-center text-[10px] font-bold border transition-all bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700 cursor-pointer">
-              <span class="block w-2.5 h-2.5 rounded-full bg-[#00FFFF] mx-auto mb-1"></span>
-              Cyber
-            </button>
-            <button type="button" onclick="selectSubtitleTheme('crimson')" data-theme="crimson"
-              class="theme-pill px-1 py-1.5 rounded-lg text-center text-[10px] font-bold border transition-all bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700 cursor-pointer">
-              <span class="block w-2.5 h-2.5 rounded-full bg-[#FF0000] mx-auto mb-1"></span>
-              Crimson
-            </button>
-            <button type="button" onclick="selectSubtitleTheme('classic_white')" data-theme="classic_white"
-              class="theme-pill px-1 py-1.5 rounded-lg text-center text-[10px] font-bold border transition-all bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700 cursor-pointer">
-              <span class="block w-2.5 h-2.5 rounded-full bg-white mx-auto mb-1"></span>
-              Classic
-            </button>
-          </div>
-
-          <!-- Interactive Live Karaoke Text Preview Card -->
-          <div class="relative bg-zinc-900/90 rounded-lg border border-zinc-800/80 p-3 h-20 flex flex-col items-center justify-center overflow-hidden shadow-inner">
-            <div class="absolute top-1 left-2 text-[9px] text-zinc-500 font-mono tracking-widest uppercase">Live 9:16 Feed Preview</div>
-            <div id="karaokeLivePreview" class="text-center font-black tracking-wide text-sm sm:text-base transition-all select-none pt-1 theme-hormozi">
-              <span class="karaoke-word word-default">WAIT</span>
-              <span class="karaoke-word word-default">FOR</span>
-              <span class="karaoke-word word-active">THIS</span>
-              <span class="karaoke-word word-default">MOMENT!</span>
-            </div>
-            <div class="absolute bottom-1 right-2 text-[9px] text-zinc-500 font-mono flex items-center space-x-1">
-              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span>Word-by-Word Karaoke</span>
-            </div>
-          </div>
-        </div>
-
+        <!-- Primary Scan Button -->
+        <button id="scanBtn" onclick="scanVideo()" 
+          class="bg-gradient-to-r from-indigo-600 via-indigo-500 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold text-sm px-6 py-2.5 rounded-xl shadow-lg shadow-indigo-600/30 flex items-center space-x-2 transition-all active:scale-[0.98] cursor-pointer">
+          <i class="fa-solid fa-radar text-indigo-200"></i>
+          <span>Scan & Detect Viral Hooks</span>
+        </button>
       </div>
 
       <!-- Live Progress Bar -->
@@ -1323,8 +1292,183 @@ HTML_PAGE = """<!DOCTYPE html>
           <span id="stageMsg" class="text-zinc-300 font-medium">Initializing pipeline...</span>
           <span id="progressPct" class="text-indigo-400 font-bold">0%</span>
         </div>
-        <div class="w-full bg-zinc-800 rounded-full h-2 overflow-hidden">
-          <div id="progressBar" class="bg-gradient-to-r from-indigo-500 to-violet-500 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+        <div class="w-full bg-zinc-800 rounded-full h-2.5 overflow-hidden">
+          <div id="progressBar" class="bg-gradient-to-r from-indigo-500 to-violet-500 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION 2: Captions Studio (Live Aesthetic Designer) -->
+    <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-xl">
+      <div class="flex flex-wrap items-center justify-between gap-2 mb-4 border-b border-zinc-800/80 pb-3">
+        <div class="flex items-center space-x-2.5">
+          <div class="w-7 h-7 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
+            <i class="fa-solid fa-closed-captioning text-amber-400 text-sm"></i>
+          </div>
+          <div>
+            <h3 class="text-sm font-bold text-zinc-100 uppercase tracking-wider">Viral Subtitle Studio & Live 9:16 Preview</h3>
+            <p class="text-xs text-zinc-400">Select an animated aesthetic and screen position. Subtitles are burned at 60 FPS.</p>
+          </div>
+        </div>
+        <div class="flex items-center space-x-3">
+          <span id="activeStyleBadge" class="text-xs font-mono font-bold px-3 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">Hormozi Gold (#FFD700)</span>
+        </div>
+      </div>
+
+      <!-- Hidden select for compatibility -->
+      <select id="subtitleThemeSelect" class="hidden">
+        <option value="hormozi" selected>Hormozi Gold</option>
+        <option value="mrbeast">MrBeast Lime</option>
+        <option value="cyber">Cyber Cyan</option>
+        <option value="crimson">Crimson Red</option>
+        <option value="sunset">Sunset Orange</option>
+        <option value="bubblegum">Bubblegum Pink</option>
+        <option value="violet">Electric Purple</option>
+        <option value="classic_white">Classic White</option>
+      </select>
+
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
+        <!-- Left: 8 Theme Cards & Position Selector (7 cols) -->
+        <div class="lg:col-span-7 space-y-4">
+          <div>
+            <span class="text-[11px] font-bold text-zinc-400 uppercase tracking-wider block mb-2">Preset Color Aesthetics (8 Themes)</span>
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5" id="stylePillsGroup">
+              <!-- 8 Preset Themes -->
+              <button type="button" onclick="selectSubtitleTheme('hormozi')" data-theme="hormozi"
+                class="theme-pill p-2.5 rounded-xl border text-left transition-all bg-indigo-600/20 border-indigo-500 text-white shadow-sm ring-1 ring-indigo-500/40 cursor-pointer flex items-center space-x-2.5">
+                <span class="w-4 h-4 rounded-full bg-[#FFD700] shrink-0 border border-black/30 shadow-sm"></span>
+                <div>
+                  <div class="text-xs font-bold leading-tight">Hormozi Gold</div>
+                  <div class="text-[10px] text-zinc-400">#FFD700 Yellow</div>
+                </div>
+              </button>
+
+              <button type="button" onclick="selectSubtitleTheme('mrbeast')" data-theme="mrbeast"
+                class="theme-pill p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2.5">
+                <span class="w-4 h-4 rounded-full bg-[#33FF00] shrink-0 border border-black/30 shadow-sm"></span>
+                <div>
+                  <div class="text-xs font-bold leading-tight">MrBeast Lime</div>
+                  <div class="text-[10px] text-zinc-500">#33FF00 Green</div>
+                </div>
+              </button>
+
+              <button type="button" onclick="selectSubtitleTheme('cyber')" data-theme="cyber"
+                class="theme-pill p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2.5">
+                <span class="w-4 h-4 rounded-full bg-[#00FFFF] shrink-0 border border-black/30 shadow-sm"></span>
+                <div>
+                  <div class="text-xs font-bold leading-tight">Cyber Cyan</div>
+                  <div class="text-[10px] text-zinc-500">#00FFFF Aqua</div>
+                </div>
+              </button>
+
+              <button type="button" onclick="selectSubtitleTheme('crimson')" data-theme="crimson"
+                class="theme-pill p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2.5">
+                <span class="w-4 h-4 rounded-full bg-[#FF2233] shrink-0 border border-black/30 shadow-sm"></span>
+                <div>
+                  <div class="text-xs font-bold leading-tight">Crimson Red</div>
+                  <div class="text-[10px] text-zinc-500">#FF2233 Fire</div>
+                </div>
+              </button>
+
+              <button type="button" onclick="selectSubtitleTheme('sunset')" data-theme="sunset"
+                class="theme-pill p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2.5">
+                <span class="w-4 h-4 rounded-full bg-[#FF7700] shrink-0 border border-black/30 shadow-sm"></span>
+                <div>
+                  <div class="text-xs font-bold leading-tight">Sunset Orange</div>
+                  <div class="text-[10px] text-zinc-500">#FF7700 Orange</div>
+                </div>
+              </button>
+
+              <button type="button" onclick="selectSubtitleTheme('bubblegum')" data-theme="bubblegum"
+                class="theme-pill p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2.5">
+                <span class="w-4 h-4 rounded-full bg-[#FF1493] shrink-0 border border-black/30 shadow-sm"></span>
+                <div>
+                  <div class="text-xs font-bold leading-tight">Bubblegum Pink</div>
+                  <div class="text-[10px] text-zinc-500">#FF1493 Pink</div>
+                </div>
+              </button>
+
+              <button type="button" onclick="selectSubtitleTheme('violet')" data-theme="violet"
+                class="theme-pill p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2.5">
+                <span class="w-4 h-4 rounded-full bg-[#BF00FF] shrink-0 border border-black/30 shadow-sm"></span>
+                <div>
+                  <div class="text-xs font-bold leading-tight">Electric Violet</div>
+                  <div class="text-[10px] text-zinc-500">#BF00FF Purple</div>
+                </div>
+              </button>
+
+              <button type="button" onclick="selectSubtitleTheme('classic_white')" data-theme="classic_white"
+                class="theme-pill p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2.5">
+                <span class="w-4 h-4 rounded-full bg-white shrink-0 border border-black/30 shadow-sm"></span>
+                <div>
+                  <div class="text-xs font-bold leading-tight">Classic White</div>
+                  <div class="text-[10px] text-zinc-500">#FFFFFF Clean</div>
+                </div>
+              </button>
+            </div>
+          </div>
+
+          <!-- Position Selector & Words Per Phrase -->
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+            <div>
+              <span class="text-[11px] font-bold text-zinc-400 uppercase tracking-wider block mb-1.5">Screen Placement</span>
+              <div class="flex items-center space-x-1.5 bg-zinc-950 border border-zinc-800 rounded-xl p-1">
+                <button type="button" onclick="setSubtitlePosition('bottom')" id="posBtn_bottom"
+                  class="pos-btn flex-1 py-1.5 text-xs rounded-lg font-bold bg-indigo-600 text-white cursor-pointer">
+                  ⬇️ Bottom
+                </button>
+                <button type="button" onclick="setSubtitlePosition('lower_third')" id="posBtn_lower_third"
+                  class="pos-btn flex-1 py-1.5 text-xs rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer">
+                  ⏸️ Lower-3rd
+                </button>
+                <button type="button" onclick="setSubtitlePosition('center')" id="posBtn_center"
+                  class="pos-btn flex-1 py-1.5 text-xs rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer">
+                  ⏺️ Center
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <span class="text-[11px] font-bold text-zinc-400 uppercase tracking-wider block mb-1.5">Caption Format</span>
+              <div class="flex items-center space-x-2 bg-zinc-950/80 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-400">
+                <i class="fa-solid fa-film text-indigo-400"></i>
+                <span>Word-by-word synchronized karaoke (2-4 words per burst)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Authentic 9:16 Vertical Screen Preview Mockup (5 cols) -->
+        <div class="lg:col-span-5 flex justify-center">
+          <div class="relative w-full max-w-[340px] aspect-[9/13] bg-gradient-to-b from-zinc-950 via-zinc-900 to-black rounded-2xl border-2 border-zinc-800 shadow-2xl overflow-hidden flex flex-col justify-between p-4 select-none">
+            <!-- Simulated Phone Header Bar -->
+            <div class="flex items-center justify-between text-[10px] text-zinc-500 font-mono border-b border-zinc-800/60 pb-2">
+              <span class="flex items-center space-x-1.5">
+                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span class="text-zinc-300 font-semibold">1080x1920 9:16</span>
+              </span>
+              <span>60 FPS Active</span>
+            </div>
+
+            <!-- Simulated Video Stage with Active Karaoke Placement -->
+            <div id="previewScreenContainer" class="flex-1 flex flex-col justify-end items-center relative py-4 transition-all">
+              <div id="karaokeLivePreview" class="text-center font-black tracking-wide text-lg transition-all select-none theme-hormozi">
+                <span class="karaoke-word word-default">WAIT</span>
+                <span class="karaoke-word word-default">FOR</span>
+                <span class="karaoke-word word-active">THIS</span>
+                <span class="karaoke-word word-default">MOMENT!</span>
+              </div>
+            </div>
+
+            <!-- Simulated Phone Footer Bar -->
+            <div class="border-t border-zinc-800/60 pt-2 flex items-center justify-between text-[10px] text-zinc-400">
+              <span id="previewPositionLabel" class="font-mono text-zinc-400">Position: Bottom (MarginV 280)</span>
+              <span class="text-amber-400 font-semibold flex items-center space-x-1">
+                <i class="fa-solid fa-sparkles text-xs"></i>
+                <span>Viral Retention Tuned</span>
+              </span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1583,11 +1727,42 @@ HTML_PAGE = """<!DOCTYPE html>
       document.getElementById('numClipsInput').value = val;
       document.querySelectorAll('.clip-count-btn').forEach(btn => {
         if (parseInt(btn.getAttribute('data-val')) === val) {
-          btn.className = 'clip-count-btn flex-1 py-1 text-xs rounded-lg font-semibold bg-indigo-600 text-white';
+          btn.className = 'clip-count-btn px-3 py-1.5 text-xs rounded-lg font-bold bg-indigo-600 text-white cursor-pointer';
         } else {
-          btn.className = 'clip-count-btn flex-1 py-1 text-xs rounded-lg font-semibold text-zinc-400 hover:text-white';
+          btn.className = 'clip-count-btn px-3 py-1.5 text-xs rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer';
         }
       });
+    }
+
+    let currentSubtitlePosition = 'bottom';
+
+    function setSubtitlePosition(pos) {
+      currentSubtitlePosition = pos;
+      
+      document.querySelectorAll('.pos-btn').forEach(btn => {
+        btn.className = 'pos-btn flex-1 py-1.5 text-xs rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer';
+      });
+      const activeBtn = document.getElementById('posBtn_' + pos);
+      if (activeBtn) {
+        activeBtn.className = 'pos-btn flex-1 py-1.5 text-xs rounded-lg font-bold bg-indigo-600 text-white cursor-pointer';
+      }
+
+      const container = document.getElementById('previewScreenContainer');
+      const label = document.getElementById('previewPositionLabel');
+      if (container) {
+        if (pos === 'center') {
+          container.className = 'flex-1 flex flex-col justify-center items-center relative py-4 transition-all';
+          if (label) label.textContent = 'Position: Center (750 MarginV)';
+        } else if (pos === 'lower_third') {
+          container.className = 'flex-1 flex flex-col justify-end pb-12 items-center relative py-4 transition-all';
+          if (label) label.textContent = 'Position: Lower-Third (420 MarginV)';
+        } else {
+          container.className = 'flex-1 flex flex-col justify-end items-center relative py-4 transition-all';
+          if (label) label.textContent = 'Position: Bottom (280 MarginV)';
+        }
+      }
+
+      sendThemeConfig();
     }
 
     async function selectSubtitleTheme(theme) {
@@ -1599,8 +1774,11 @@ HTML_PAGE = """<!DOCTYPE html>
         'hormozi': 'Hormozi Gold (#FFD700)',
         'mrbeast': 'MrBeast Lime (#33FF00)',
         'cyber': 'Cyber Cyan (#00FFFF)',
-        'crimson': 'Crimson Red (#FF0000)',
-        'classic_white': 'Classic White'
+        'crimson': 'Crimson Red (#FF2233)',
+        'sunset': 'Sunset Orange (#FF7700)',
+        'bubblegum': 'Bubblegum Pink (#FF1493)',
+        'violet': 'Electric Violet (#BF00FF)',
+        'classic_white': 'Classic White (#FFFFFF)'
       };
       const badge = document.getElementById('activeStyleBadge');
       if (badge) badge.textContent = badgeNames[theme] || theme;
@@ -1608,25 +1786,25 @@ HTML_PAGE = """<!DOCTYPE html>
       document.querySelectorAll('.theme-pill').forEach(btn => {
         const t = btn.getAttribute('data-theme');
         if (t === theme) {
-          btn.className = 'theme-pill px-1 py-1.5 rounded-lg text-center text-[10px] font-bold border transition-all bg-indigo-600/20 border-indigo-500 text-white shadow-sm ring-1 ring-indigo-500/50 cursor-pointer';
+          btn.className = 'theme-pill p-2.5 rounded-xl border text-left transition-all bg-indigo-600/20 border-indigo-500 text-white shadow-sm ring-1 ring-indigo-500/40 cursor-pointer flex items-center space-x-2.5';
         } else {
-          btn.className = 'theme-pill px-1 py-1.5 rounded-lg text-center text-[10px] font-bold border transition-all bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700 cursor-pointer';
+          btn.className = 'theme-pill p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2.5';
         }
       });
 
       renderKaraokePreview();
-      await changeSubtitleTheme(theme);
+      await sendThemeConfig();
     }
 
-    async function changeSubtitleTheme(theme) {
+    async function sendThemeConfig() {
       try {
         await fetch('/api/set_theme', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({theme})
+          body: JSON.stringify({theme: currentSubtitleTheme, position: currentSubtitlePosition})
         });
       } catch (err) {
-        console.error('Failed to set subtitle theme:', err);
+        console.error('Failed to sync theme config:', err);
       }
     }
 
@@ -1783,6 +1961,9 @@ HTML_PAGE = """<!DOCTYPE html>
 
         if (data.subtitle_theme && data.subtitle_theme !== currentSubtitleTheme) {
           selectSubtitleTheme(data.subtitle_theme);
+        }
+        if (data.subtitle_position && data.subtitle_position !== currentSubtitlePosition) {
+          setSubtitlePosition(data.subtitle_position);
         }
 
         if (data.status === 'idle') {

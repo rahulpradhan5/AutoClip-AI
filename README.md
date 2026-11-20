@@ -7,7 +7,7 @@ Autonomous, 100% private, local video clipper that converts long videos, podcast
 ## Key Features
 
 - **MediaPipe AI Face Tracking & Scene-Cut Snapping**: Dynamically tracks speakers and centers active subjects from 16:9 widescreen to 9:16 vertical using smooth Kalman-filtered framing, with instant angle snapping on shot cuts.
-- **Whisper AI Animated Karaoke Subtitles**: Word-by-word synchronized subtitles with customizable visual themes (Hormozi Gold, MrBeast Lime, Cyber Cyan, Crimson Red, and Classic White).
+- **Whisper AI Animated Karaoke Subtitles**: Word-by-word synchronized subtitles with 8 customizable visual themes (Hormozi Gold, MrBeast Lime, Cyber Cyan, Crimson Red, Sunset Orange, Bubblegum Pink, Electric Violet, and Classic White) and flexible screen placements (Bottom, Lower-Third, Center).
 - **Intelligent Hook Detector (with Optional Ollama LLM)**: Analyzes speech transcripts for emotional peaks, curiosity gaps, and cliffhangers. Seamlessly plugs into local Ollama (Llama 3 / Mistral) when running, with instant fallback to built-in high-speed NLP heuristics.
 - **Viral Metadata Generator**: Automatically creates high-CTR titles and 5 niche-targeted hashtags (`#Shorts`, `#Gaming`, etc.).
 - **Interactive Web Studio UI**: Built-in dashboard (`http://localhost:8888`) with range scrubbing, real-time clipping progress, draft video previews, and one-click approvals.

@@ -47,6 +47,7 @@ def format_ass_time(seconds: float) -> str:
 
 THEME_STYLES = {
     "hormozi": {
+        "name": "Hormozi Gold",
         "highlight_ass": r"{\c&H00D7FF&}",  # #FFD700 Gold / Yellow
         "default_ass": r"{\c&HFFFFFF&}",    # Pure White
         "primary_bgr": "&H00FFFFFF",
@@ -57,6 +58,7 @@ THEME_STYLES = {
         "uppercase": True,
     },
     "mrbeast": {
+        "name": "MrBeast Lime",
         "highlight_ass": r"{\c&H00FF33&}",  # #33FF00 Electric Lime Green
         "default_ass": r"{\c&HFFFFFF&}",    # Pure White
         "primary_bgr": "&H00FFFFFF",
@@ -67,6 +69,7 @@ THEME_STYLES = {
         "uppercase": True,
     },
     "cyber": {
+        "name": "Cyber Cyan",
         "highlight_ass": r"{\c&HFFFF00&}",  # #00FFFF Neon Cyan
         "default_ass": r"{\c&HFFFFFF&}",    # Pure White
         "primary_bgr": "&H00FFFFFF",
@@ -77,6 +80,7 @@ THEME_STYLES = {
         "uppercase": True,
     },
     "crimson": {
+        "name": "Crimson Red",
         "highlight_ass": r"{\c&H0000FF&}",  # #FF0000 Crimson Red
         "default_ass": r"{\c&HFFFFFF&}",    # Pure White
         "primary_bgr": "&H00FFFFFF",
@@ -86,7 +90,41 @@ THEME_STYLES = {
         "shadow": 3,
         "uppercase": True,
     },
+    "sunset": {
+        "name": "Sunset Orange",
+        "highlight_ass": r"{\c&H0077FF&}",  # #FF7700 Warm Orange
+        "default_ass": r"{\c&HFFFFFF&}",    # Pure White
+        "primary_bgr": "&H00FFFFFF",
+        "secondary_bgr": "&H000077FF",
+        "font_size": 78,
+        "outline": 6,
+        "shadow": 3,
+        "uppercase": True,
+    },
+    "bubblegum": {
+        "name": "Bubblegum Pink",
+        "highlight_ass": r"{\c&H9314FF&}",  # #FF1493 Hot Pink
+        "default_ass": r"{\c&HFFFFFF&}",    # Pure White
+        "primary_bgr": "&H00FFFFFF",
+        "secondary_bgr": "&H009314FF",
+        "font_size": 78,
+        "outline": 6,
+        "shadow": 3,
+        "uppercase": True,
+    },
+    "violet": {
+        "name": "Electric Purple",
+        "highlight_ass": r"{\c&HFF00BF&}",  # #BF00FF Electric Purple
+        "default_ass": r"{\c&HFFFFFF&}",    # Pure White
+        "primary_bgr": "&H00FFFFFF",
+        "secondary_bgr": "&H00FF00BF",
+        "font_size": 78,
+        "outline": 6,
+        "shadow": 4,
+        "uppercase": True,
+    },
     "classic_white": {
+        "name": "Classic White",
         "highlight_ass": r"{\c&HFFFFFF&}",  # Pure White
         "default_ass": r"{\c&HE0E0E0&}",    # Soft Platinum
         "primary_bgr": "&H00FFFFFF",
@@ -99,13 +137,19 @@ THEME_STYLES = {
 }
 
 
-def build_ass_header(theme_name: str = "hormozi") -> str:
+def build_ass_header(theme_name: str = "hormozi", position: str = "bottom") -> str:
     cfg = THEME_STYLES.get(theme_name.lower(), THEME_STYLES["hormozi"])
     fsize = cfg["font_size"]
     primary = cfg["primary_bgr"]
     secondary = cfg["secondary_bgr"]
     outline = cfg["outline"]
     shadow = cfg["shadow"]
+
+    margin_v = 280
+    if position == "center":
+        margin_v = 750
+    elif position == "lower_third":
+        margin_v = 420
 
     return f"""[Script Info]
 Title: AutoClip-AI Subtitles ({theme_name})
@@ -118,7 +162,7 @@ PlayResY: 1920
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: ViralKaraoke,Arial Black,{fsize},{primary},{secondary},&H00000000,&H90000000,-1,0,0,0,100,100,2,0,1,{outline},{shadow},2,60,60,280,1
+Style: ViralKaraoke,Arial Black,{fsize},{primary},{secondary},&H00000000,&H90000000,-1,0,0,0,100,100,2,0,1,{outline},{shadow},2,60,60,{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -154,6 +198,7 @@ def generate_karaoke_ass(
     clip_start_sec: float = 0.0,
     clip_end_sec: float | None = None,
     theme: str = "hormozi",
+    position: str = "bottom",
 ) -> str:
     with open(transcript_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -255,7 +300,7 @@ def generate_karaoke_ass(
             event_line = f"Dialogue: 0,{start_str},{end_str},ViralKaraoke,,0,0,0,,{line_text}"
             events.append(event_line)
 
-    ass_content = build_ass_header(theme) + "\n".join(events) + "\n"
+    ass_content = build_ass_header(theme, position) + "\n".join(events) + "\n"
 
     os.makedirs(os.path.dirname(os.path.abspath(output_ass_path)), exist_ok=True)
     with open(output_ass_path, "w", encoding="utf-8") as f:
@@ -325,7 +370,8 @@ def main():
     parser.add_argument("--start", type=float, default=0.0, help="Clip start timestamp relative to source")
     parser.add_argument("--end", type=float, default=None, help="Clip end timestamp relative to source")
     parser.add_argument("--fps", type=int, default=60, help="Target export FPS (e.g., 60)")
-    parser.add_argument("--theme", default="hormozi", choices=["hormozi", "mrbeast", "cyber", "crimson", "classic_white"], help="Subtitle color & font theme preset")
+    parser.add_argument("--theme", default="hormozi", choices=["hormozi", "mrbeast", "cyber", "crimson", "sunset", "bubblegum", "violet", "classic_white"], help="Subtitle color & font theme preset")
+    parser.add_argument("--position", default="bottom", choices=["bottom", "center", "lower_third"], help="Vertical position on 9:16 screen")
     parser.add_argument("--ass-output", default="./temp_work/subtitles.ass", help="Intermediary ASS path")
     args = parser.parse_args()
 
@@ -335,6 +381,7 @@ def main():
         clip_start_sec=args.start,
         clip_end_sec=args.end,
         theme=args.theme,
+        position=args.position,
     )
 
     burn_captions_to_video(
