@@ -50,6 +50,12 @@ except ImportError:
         }
 
 try:
+    from detect_hooks import calculate_intensity_score
+except ImportError:
+    def calculate_intensity_score(text, duration, words):
+        return 85.0, "Custom Moment 🎯"
+
+try:
     import youtube_uploader
 except ImportError:
     youtube_uploader = None
@@ -261,6 +267,110 @@ def save_clip_metadata_file(
         f"==================================================\n"
     )
     txt_path.write_text(content, encoding="utf-8")
+
+
+def analyze_custom_timeframe(start_sec: float, end_sec: float) -> dict:
+    dur = round(end_sec - start_sec, 1)
+    transcript_path = TEMP_DIR / "transcript.json"
+
+    full_text = ""
+    words_in_range = []
+
+    if transcript_path.exists():
+        try:
+            with open(transcript_path, "r", encoding="utf-8") as f:
+                tdata = json.load(f)
+            segs = tdata.get("segments", []) if isinstance(tdata, dict) else (tdata if isinstance(tdata, list) else [])
+
+            matched_texts = []
+            for s in segs:
+                s_start = float(s.get("start", 0.0))
+                s_end = float(s.get("end", 0.0))
+                # Check overlap with [start_sec, end_sec]
+                if s_end >= start_sec and s_start <= end_sec:
+                    txt = s.get("text", "").strip()
+                    if txt:
+                        matched_texts.append(txt)
+                    for w in s.get("words", []):
+                        w_start = float(w.get("start", 0.0))
+                        w_end = float(w.get("end", 0.0))
+                        if w_end >= start_sec and w_start <= end_sec:
+                            words_in_range.append(w)
+
+            if matched_texts:
+                full_text = " ".join(matched_texts).strip()
+        except Exception as err:
+            state.log(f"Warning reading transcript for custom timeframe: {err}")
+
+    # Determine hook line
+    if full_text:
+        # Split sentences and find first punchy hook
+        sentences = [s.strip() for s in re.split(r"(?<=[.?!])\s+", full_text) if len(s.strip()) > 3]
+        if sentences:
+            hook = sentences[0]
+            if len(hook) > 85:
+                hook = hook[:82] + "..."
+        else:
+            hook = full_text[:80] + ("..." if len(full_text) > 80 else "")
+    else:
+        # Visual / action moment without speech
+        hook = f"Custom Highlight [{int(start_sec // 60):02d}:{int(start_sec % 60):02d} - {int(end_sec // 60):02d}:{int(end_sec % 60):02d}]"
+        full_text = f"Custom highlighted moment from {start_sec:.1f}s to {end_sec:.1f}s."
+
+    # Calculate intensity score & label
+    score, intensity_lbl = calculate_intensity_score(full_text, dur, words_in_range)
+    if not words_in_range:
+        intensity_lbl = "Custom Moment 🎯"
+        score = 90.0
+
+    # Determine next available ID
+    existing_ids = []
+    for tf in state.timeframes:
+        try:
+            existing_ids.append(int(tf.get("id", 0)))
+        except (ValueError, TypeError):
+            pass
+    for c in state.draft_clips:
+        try:
+            existing_ids.append(int(c.get("id", 0)))
+        except (ValueError, TypeError):
+            pass
+    for c in state.approved_clips:
+        try:
+            existing_ids.append(int(c.get("clip_num", 0)))
+        except (ValueError, TypeError):
+            pass
+    new_id = (max(existing_ids) + 1) if existing_ids else 1
+
+    # Generate live metadata, title, hashtags and description
+    source_title = getattr(state, "source_title", "") or ""
+    meta_full = generate_clip_metadata_full(
+        text=full_text,
+        hook=hook,
+        index=new_id,
+        variation=0,
+        video_title=source_title,
+        timestamps=f"{start_sec:.1f}s - {end_sec:.1f}s ({dur:.1f}s)"
+    )
+
+    tf_obj = {
+        "id": new_id,
+        "start": round(start_sec, 2),
+        "end": round(end_sec, 2),
+        "duration": round(dur, 1),
+        "hook": hook,
+        "full_text": full_text,
+        "score": score,
+        "intensity": intensity_lbl,
+        "title": meta_full.get("title", f"Moment #{new_id} 🔥"),
+        "hashtags": meta_full.get("hashtags", "#Shorts #Viral #Trending"),
+        "description": meta_full.get("description", ""),
+        "keywords": meta_full.get("keywords", []),
+        "variation": 0,
+        "selected": True,
+        "custom": True
+    }
+    return tf_obj
 
 
 def refresh_approved_clips():
@@ -1114,6 +1224,65 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(resp_bytes)
+            return
+
+        # Step 2c: Add and analyze custom timeframe
+        if path == "/api/add-custom-timeframe":
+            try:
+                data = json.loads(body) if body else {}
+                start_sec = float(data.get("start", 0.0))
+                end_sec = float(data.get("end", 0.0))
+            except Exception:
+                start_sec = 0.0
+                end_sec = 0.0
+
+            if end_sec <= start_sec:
+                self.send_response(HTTPStatus.BAD_REQUEST)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "End time must be greater than start time."}).encode("utf-8"))
+                return
+
+            try:
+                tf_obj = analyze_custom_timeframe(start_sec, end_sec)
+                with state.lock:
+                    state.timeframes.append(tf_obj)
+                    if state.status in ["idle", "timeframes_ready"]:
+                        state.status = "timeframes_ready"
+                        state.progress_pct = 100
+                        state.stage_message = f"Found {len(state.timeframes)} moments! Select clips to render below, preview in player, or regenerate titles."
+                    state.log(f"🎯 Analyzed & added custom moment #{tf_obj['id']} ({start_sec:.1f}s - {end_sec:.1f}s): {tf_obj['title']}")
+
+                # Persist to viral_hooks.json so it stays on disk
+                hooks_path = TEMP_DIR / "viral_hooks.json"
+                try:
+                    hdata = []
+                    if hooks_path.exists():
+                        with open(hooks_path, "r", encoding="utf-8") as f:
+                            hdata = json.load(f)
+                    if isinstance(hdata, list):
+                        hdata.append(tf_obj)
+                    elif isinstance(hdata, dict) and "segments" in hdata:
+                        hdata["segments"].append(tf_obj)
+                    else:
+                        hdata = [tf_obj]
+                    with open(hooks_path, "w", encoding="utf-8") as f:
+                        json.dump(hdata, f, indent=2, ensure_ascii=False)
+                except Exception:
+                    pass
+
+                resp_bytes = json.dumps({"success": True, "timeframe": tf_obj, "total": len(state.timeframes)}).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp_bytes)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(resp_bytes)
+            except Exception as e:
+                self.send_response(HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
             return
 
         # Step 3: Regenerate metadata for a clip on-demand (Drafts or Final Approved Clips)
@@ -2180,12 +2349,12 @@ HTML_PAGE = """<!DOCTYPE html>
                 </summary>
                 <div class="grid grid-cols-1 sm:grid-cols-4 gap-2.5 mt-3 p-3 bg-zinc-950 rounded-xl border border-zinc-800">
                   <div>
-                    <label class="block text-[10px] text-zinc-400 mb-1">Start (Seconds)</label>
-                    <input type="number" id="customStart" step="0.5" value="0.0" class="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1 text-xs text-white">
+                    <label class="block text-[10px] text-zinc-400 mb-1">Start (Seconds or MM:SS)</label>
+                    <input type="text" id="customStart" value="0.0" placeholder="e.g. 120.0 or 02:00" class="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1 text-xs text-white font-mono">
                   </div>
                   <div>
-                    <label class="block text-[10px] text-zinc-400 mb-1">End (Seconds)</label>
-                    <input type="number" id="customEnd" step="0.5" value="30.0" class="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1 text-xs text-white">
+                    <label class="block text-[10px] text-zinc-400 mb-1">End (Seconds or MM:SS)</label>
+                    <input type="text" id="customEnd" value="35.0" placeholder="e.g. 155.0 or 02:35" class="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1 text-xs text-white font-mono">
                   </div>
                   <div class="flex items-end">
                     <button onclick="setCustomFromPlayer()" class="w-full bg-zinc-800 hover:bg-zinc-700 text-zinc-200 py-1.5 px-2 rounded-lg text-[11px] font-medium cursor-pointer" title="Set start time to current player position">
@@ -2193,7 +2362,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     </button>
                   </div>
                   <div class="flex items-end">
-                    <button onclick="addCustomTimeframe()" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-1.5 px-2 rounded-lg text-[11px] font-bold cursor-pointer">
+                    <button id="btnAddCustomTf" onclick="addCustomTimeframe()" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-1.5 px-2 rounded-lg text-[11px] font-bold cursor-pointer transition-all">
                       + Add To List
                     </button>
                   </div>
@@ -4075,36 +4244,87 @@ HTML_PAGE = """<!DOCTYPE html>
       }
     }
 
-    function addCustomTimeframe() {
-      const startSec = parseFloat(document.getElementById('customStart').value) || 0.0;
-      const endSec = parseFloat(document.getElementById('customEnd').value) || (startSec + 30.0);
+    function parseTimeToSeconds(input) {
+      if (typeof input === 'number') return input;
+      const str = String(input || '').trim();
+      if (!str) return 0;
+      if (str.includes(':')) {
+        const parts = str.split(':').map(p => parseFloat(p) || 0);
+        if (parts.length === 3) {
+          return parts[0] * 3600 + parts[1] * 60 + parts[2];
+        } else if (parts.length === 2) {
+          return parts[0] * 60 + parts[1];
+        }
+      }
+      return parseFloat(str) || 0;
+    }
+
+    async function addCustomTimeframe() {
+      const startInput = document.getElementById('customStart');
+      const endInput = document.getElementById('customEnd');
+      const btn = document.getElementById('btnAddCustomTf');
+
+      const startSec = parseTimeToSeconds(startInput.value);
+      const endSec = parseTimeToSeconds(endInput.value);
 
       if (endSec <= startSec) {
         alert('End time must be greater than start time.');
         return;
       }
 
-      const dur = Math.round((endSec - startSec) * 10) / 10;
-      const newId = loadedTimeframes.length + 1;
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i> Analyzing...';
+      }
 
-      const newTf = {
-        id: newId,
-        start: startSec,
-        end: endSec,
-        duration: dur,
-        hook: `Custom User Segment [${startSec}s - ${endSec}s]`,
-        intensity: "User Selected 🎯",
-        score: 100.0,
-        title: `Custom Epic Moment #${newId} 🔥`,
-        hashtags: "#Shorts #Viral #Gaming #Trending #Clips",
-        variation: 0,
-        selected: true
-      };
+      try {
+        const res = await fetch('/api/add-custom-timeframe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ start: startSec, end: endSec })
+        });
+        const data = await res.json();
+        if (res.ok && data.success && data.timeframe) {
+          const newTf = data.timeframe;
 
-      loadedTimeframes.push(newTf);
-      lastTimeframesFingerprint = "";
-      renderTimeframes(loadedTimeframes);
-      alert(`Added Custom Moment #${newId} (${dur}s) to selection list!`);
+          // Check if already in loadedTimeframes
+          const exists = loadedTimeframes.some(tf => tf.id === newTf.id);
+          if (!exists) {
+            loadedTimeframes.push(newTf);
+          } else {
+            // Replace if exists
+            loadedTimeframes = loadedTimeframes.map(tf => tf.id === newTf.id ? newTf : tf);
+          }
+
+          lastTimeframesFingerprint = "";
+          renderTimeframes(loadedTimeframes);
+          updateSelectedCount();
+
+          // Scroll to the newly added card in Detected Hot Moments
+          setTimeout(() => {
+            const newIndex = loadedTimeframes.length - 1;
+            const newCard = document.getElementById(`tf_card_${newIndex}`);
+            if (newCard) {
+              newCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              newCard.classList.add('ring-2', 'ring-indigo-500', 'bg-indigo-950/60');
+              setTimeout(() => {
+                newCard.classList.remove('ring-2', 'ring-indigo-500', 'bg-indigo-950/60');
+              }, 2500);
+            }
+          }, 200);
+
+          alert(`✓ Analyzed & added Moment #${newTf.id} (${newTf.duration}s) to Detected Hot Moments!\\n\\nHook: "${newTf.hook}"\\nTitle: ${newTf.title}`);
+        } else {
+          alert('Failed to add custom timeframe: ' + (data.error || 'Server error'));
+        }
+      } catch (err) {
+        alert('Network error analyzing custom timeframe: ' + err.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '+ Add To List';
+        }
+      }
     }
 
     function renderDraftClips(drafts) {
