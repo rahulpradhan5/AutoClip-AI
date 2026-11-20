@@ -1100,6 +1100,69 @@ HTML_PAGE = """<!DOCTYPE html>
       0%, 100% { opacity: 1; }
       50% { opacity: 0.6; }
     }
+    /* Dynamic Caption Theme Live Preview */
+    .karaoke-word {
+      display: inline-block;
+      margin: 0 4px;
+      transition: all 0.15s ease-in-out;
+      font-family: 'Arial Black', Impact, sans-serif;
+    }
+    .theme-hormozi .word-active {
+      color: #FFD700 !important;
+      -webkit-text-stroke: 1.8px #000;
+      text-shadow: 0 3px 6px rgba(0,0,0,0.9);
+      transform: scale(1.08);
+    }
+    .theme-hormozi .word-default {
+      color: #FFFFFF !important;
+      -webkit-text-stroke: 1.5px #000;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+    }
+    .theme-mrbeast .word-active {
+      color: #33FF00 !important;
+      -webkit-text-stroke: 1.8px #000;
+      text-shadow: 0 3px 6px rgba(0,0,0,0.9);
+      transform: scale(1.08);
+    }
+    .theme-mrbeast .word-default {
+      color: #FFFFFF !important;
+      -webkit-text-stroke: 1.5px #000;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+    }
+    .theme-cyber .word-active {
+      color: #00FFFF !important;
+      -webkit-text-stroke: 1.8px #000;
+      text-shadow: 0 0 10px rgba(0,255,255,0.7), 0 3px 6px rgba(0,0,0,0.9);
+      transform: scale(1.08);
+    }
+    .theme-cyber .word-default {
+      color: #FFFFFF !important;
+      -webkit-text-stroke: 1.5px #000;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+    }
+    .theme-crimson .word-active {
+      color: #FF2233 !important;
+      -webkit-text-stroke: 1.8px #000;
+      text-shadow: 0 3px 6px rgba(0,0,0,0.9);
+      transform: scale(1.08);
+    }
+    .theme-crimson .word-default {
+      color: #FFFFFF !important;
+      -webkit-text-stroke: 1.5px #000;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+    }
+    .theme-classic_white .word-active {
+      color: #FFFFFF !important;
+      -webkit-text-stroke: 1.2px #000;
+      text-shadow: 0 2px 5px rgba(0,0,0,0.8);
+      transform: scale(1.04);
+      text-decoration: underline;
+    }
+    .theme-classic_white .word-default {
+      color: #D1D5DB !important;
+      -webkit-text-stroke: 1.2px #000;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.7);
+    }
   </style>
 </head>
 <body class="bg-zinc-950 text-zinc-100 min-h-screen font-sans flex flex-col">
@@ -1130,60 +1193,132 @@ HTML_PAGE = """<!DOCTYPE html>
   <!-- Main Container -->
   <main class="flex-1 max-w-[1700px] w-full mx-auto p-6 space-y-6">
 
-    <!-- Top Action Banner -->
-    <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-xl">
-      <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
-        <div class="md:col-span-5">
-          <label class="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">
-            <i class="fa-brands fa-youtube text-red-500 mr-1.5"></i> Video / Livestream / Reel URL
-          </label>
-          <div class="relative">
-            <input type="text" id="videoUrlInput" 
-              placeholder="https://www.youtube.com/watch?v=..." 
-              value="https://www.youtube.com/watch?v=BGUTv2K_SWs"
-              class="w-full bg-zinc-950 border border-zinc-700 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-xl px-4 py-2.5 text-sm text-white placeholder-zinc-500 transition-all">
+    <!-- Studio Control Deck: 2 Clean Sections (Ingestion & Subtitle Studio) -->
+    <div class="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-2xl backdrop-blur space-y-4">
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+        
+        <!-- LEFT: URL & Extraction Settings (7 cols) -->
+        <div class="lg:col-span-7 flex flex-col justify-between space-y-3.5">
+          <!-- Video Input -->
+          <div>
+            <div class="flex items-center justify-between mb-1.5">
+              <label class="text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center space-x-1.5">
+                <i class="fa-brands fa-youtube text-red-500"></i>
+                <span>Video / Stream / Podcast Source URL</span>
+              </label>
+              <button type="button" onclick="pasteVideoUrl()" class="text-[11px] text-indigo-400 hover:text-indigo-300 flex items-center space-x-1 transition-colors cursor-pointer">
+                <i class="fa-regular fa-paste"></i>
+                <span>Paste Link</span>
+              </button>
+            </div>
+            <div class="relative">
+              <input type="text" id="videoUrlInput" 
+                placeholder="https://www.youtube.com/watch?v=..." 
+                value="https://www.youtube.com/watch?v=BGUTv2K_SWs"
+                class="w-full bg-zinc-950 border border-zinc-700/80 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 rounded-xl px-4 py-2.5 text-xs text-white placeholder-zinc-500 transition-all font-mono">
+            </div>
+          </div>
+
+          <!-- Bottom row of Left Panel: Target Clips, Resume, Scan CTA -->
+          <div class="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end pt-1">
+            <div class="sm:col-span-4">
+              <label class="block text-[11px] font-semibold text-zinc-400 uppercase tracking-wider mb-1">
+                Target Clips Count
+              </label>
+              <div class="flex items-center space-x-1 bg-zinc-950 border border-zinc-800 rounded-xl p-1">
+                <button type="button" onclick="setClipCount(3)" class="clip-count-btn flex-1 py-1 text-xs rounded-lg font-semibold bg-indigo-600 text-white" data-val="3">3</button>
+                <button type="button" onclick="setClipCount(5)" class="clip-count-btn flex-1 py-1 text-xs rounded-lg font-semibold text-zinc-400 hover:text-white" data-val="5">5</button>
+                <button type="button" onclick="setClipCount(10)" class="clip-count-btn flex-1 py-1 text-xs rounded-lg font-semibold text-zinc-400 hover:text-white" data-val="10">10</button>
+                <input type="number" id="numClipsInput" value="3" min="1" max="25" class="w-10 bg-transparent text-center text-xs text-white font-bold border-l border-zinc-800 focus:outline-none">
+              </div>
+            </div>
+
+            <div class="sm:col-span-8 flex flex-col justify-end space-y-1.5">
+              <button id="scanBtn" onclick="scanVideo()" 
+                class="w-full bg-gradient-to-r from-indigo-600 via-indigo-500 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold text-sm px-5 py-2.5 rounded-xl shadow-lg shadow-indigo-600/30 flex items-center justify-center space-x-2 transition-all active:scale-[0.98] cursor-pointer">
+                <i class="fa-solid fa-radar text-indigo-200"></i>
+                <span>Scan & Detect Viral Hooks</span>
+              </button>
+              
+              <div class="flex items-center justify-between text-[11px] text-zinc-400 px-1">
+                <label class="flex items-center space-x-1.5 cursor-pointer">
+                  <input type="checkbox" id="resumeCheckbox" class="w-3.5 h-3.5 rounded text-amber-500 focus:ring-amber-400 bg-zinc-950 border-zinc-700">
+                  <span>Resume after last clip</span>
+                </label>
+                <span class="text-amber-400 font-mono text-[11px]" id="resumeTimeLabel">00:00</span>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div class="md:col-span-2">
-          <label class="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">
-            <i class="fa-solid fa-palette text-amber-400 mr-1.5"></i> Captions Style
-          </label>
-          <select id="subtitleThemeSelect" onchange="changeSubtitleTheme(this.value)"
-            class="w-full bg-zinc-950 border border-zinc-700 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-xl px-3 py-2.5 text-xs text-white font-semibold transition-all">
+        <!-- RIGHT: Captions Aesthetic & Dynamic Live Preview (5 cols) -->
+        <div class="lg:col-span-5 bg-zinc-950/80 border border-zinc-800/80 rounded-xl p-3.5 flex flex-col justify-between">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center space-x-1.5">
+              <i class="fa-solid fa-closed-captioning text-amber-400"></i>
+              <span>Captions Style & Live Preview</span>
+            </span>
+            <span id="activeStyleBadge" class="text-[10px] font-mono px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-400 border border-amber-500/20">Hormozi Gold</span>
+          </div>
+
+          <!-- Hidden select for compatibility -->
+          <select id="subtitleThemeSelect" class="hidden">
             <option value="hormozi" selected>Hormozi Gold</option>
             <option value="mrbeast">MrBeast Lime</option>
             <option value="cyber">Cyber Cyan</option>
             <option value="crimson">Crimson Red</option>
             <option value="classic_white">Classic White</option>
           </select>
+
+          <!-- Style Selection Pills -->
+          <div class="grid grid-cols-5 gap-1.5 mb-2.5" id="stylePillsGroup">
+            <button type="button" onclick="selectSubtitleTheme('hormozi')" data-theme="hormozi"
+              class="theme-pill px-1 py-1.5 rounded-lg text-center text-[10px] font-bold border transition-all bg-indigo-600/20 border-indigo-500 text-white shadow-sm ring-1 ring-indigo-500/50 cursor-pointer">
+              <span class="block w-2.5 h-2.5 rounded-full bg-[#FFD700] mx-auto mb-1 shadow-sm"></span>
+              Hormozi
+            </button>
+            <button type="button" onclick="selectSubtitleTheme('mrbeast')" data-theme="mrbeast"
+              class="theme-pill px-1 py-1.5 rounded-lg text-center text-[10px] font-bold border transition-all bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700 cursor-pointer">
+              <span class="block w-2.5 h-2.5 rounded-full bg-[#33FF00] mx-auto mb-1"></span>
+              MrBeast
+            </button>
+            <button type="button" onclick="selectSubtitleTheme('cyber')" data-theme="cyber"
+              class="theme-pill px-1 py-1.5 rounded-lg text-center text-[10px] font-bold border transition-all bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700 cursor-pointer">
+              <span class="block w-2.5 h-2.5 rounded-full bg-[#00FFFF] mx-auto mb-1"></span>
+              Cyber
+            </button>
+            <button type="button" onclick="selectSubtitleTheme('crimson')" data-theme="crimson"
+              class="theme-pill px-1 py-1.5 rounded-lg text-center text-[10px] font-bold border transition-all bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700 cursor-pointer">
+              <span class="block w-2.5 h-2.5 rounded-full bg-[#FF0000] mx-auto mb-1"></span>
+              Crimson
+            </button>
+            <button type="button" onclick="selectSubtitleTheme('classic_white')" data-theme="classic_white"
+              class="theme-pill px-1 py-1.5 rounded-lg text-center text-[10px] font-bold border transition-all bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700 cursor-pointer">
+              <span class="block w-2.5 h-2.5 rounded-full bg-white mx-auto mb-1"></span>
+              Classic
+            </button>
+          </div>
+
+          <!-- Interactive Live Karaoke Text Preview Card -->
+          <div class="relative bg-zinc-900/90 rounded-lg border border-zinc-800/80 p-3 h-20 flex flex-col items-center justify-center overflow-hidden shadow-inner">
+            <div class="absolute top-1 left-2 text-[9px] text-zinc-500 font-mono tracking-widest uppercase">Live 9:16 Feed Preview</div>
+            <div id="karaokeLivePreview" class="text-center font-black tracking-wide text-sm sm:text-base transition-all select-none pt-1 theme-hormozi">
+              <span class="karaoke-word word-default">WAIT</span>
+              <span class="karaoke-word word-default">FOR</span>
+              <span class="karaoke-word word-active">THIS</span>
+              <span class="karaoke-word word-default">MOMENT!</span>
+            </div>
+            <div class="absolute bottom-1 right-2 text-[9px] text-zinc-500 font-mono flex items-center space-x-1">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span>Word-by-Word Karaoke</span>
+            </div>
+          </div>
         </div>
 
-        <div class="md:col-span-2">
-          <label class="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">
-            <i class="fa-solid fa-crosshairs text-indigo-400 mr-1.5"></i> Target Clips
-          </label>
-          <input type="number" id="numClipsInput" value="3" min="1" max="10" 
-            class="w-full bg-zinc-950 border border-zinc-700 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-xl px-3.5 py-2.5 text-sm text-center text-white font-semibold transition-all">
-        </div>
-
-        <div class="md:col-span-3 flex flex-col justify-end space-y-2">
-          <button id="scanBtn" onclick="scanVideo()" 
-            class="w-full bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-semibold text-sm px-4 py-2.5 rounded-xl shadow-lg shadow-indigo-600/30 flex items-center justify-center space-x-2 transition-all active:scale-[0.98]">
-            <i class="fa-solid fa-radar"></i>
-            <span>Scan & Detect Hooks</span>
-          </button>
-          
-          <!-- Resume Clipping Toggle -->
-          <label class="flex items-center space-x-2 text-[11px] text-zinc-300 cursor-pointer pt-0.5">
-            <input type="checkbox" id="resumeCheckbox" class="w-3.5 h-3.5 rounded text-amber-500 focus:ring-amber-400 bg-zinc-950 border-zinc-700">
-            <span>Resume after last clip (<b id="resumeTimeLabel" class="text-amber-400">00:00</b>)</span>
-          </label>
-        </div>
       </div>
 
       <!-- Live Progress Bar -->
-      <div id="progressSection" class="mt-4 pt-4 border-t border-zinc-800/80 hidden">
+      <div id="progressSection" class="pt-3 border-t border-zinc-800/80 hidden">
         <div class="flex justify-between items-center text-xs mb-1.5">
           <span id="stageMsg" class="text-zinc-300 font-medium">Initializing pipeline...</span>
           <span id="progressPct" class="text-indigo-400 font-bold">0%</span>
@@ -1412,6 +1547,77 @@ HTML_PAGE = """<!DOCTYPE html>
     let loadedTimeframes = [];
     let loadedDrafts = [];
 
+    // --- Dynamic Karaoke Live Visualizer ---
+    const PREVIEW_WORDS = ["WAIT", "FOR", "THIS", "MOMENT!"];
+    let previewWordIndex = 2;
+    let currentSubtitleTheme = 'hormozi';
+
+    function renderKaraokePreview() {
+      const container = document.getElementById('karaokeLivePreview');
+      if (!container) return;
+      container.className = `text-center font-black tracking-wide text-sm sm:text-base transition-all select-none pt-1 theme-${currentSubtitleTheme}`;
+      let html = '';
+      PREVIEW_WORDS.forEach((word, idx) => {
+        const isActive = idx === previewWordIndex;
+        const cls = isActive ? 'word-active' : 'word-default';
+        html += `<span class="karaoke-word ${cls}">${word}</span>`;
+      });
+      container.innerHTML = html;
+      previewWordIndex = (previewWordIndex + 1) % PREVIEW_WORDS.length;
+    }
+
+    setInterval(renderKaraokePreview, 650);
+
+    async function pasteVideoUrl() {
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text && text.trim()) {
+          document.getElementById('videoUrlInput').value = text.trim();
+        }
+      } catch (err) {
+        alert("Please use Ctrl+V to paste your video link.");
+      }
+    }
+
+    function setClipCount(val) {
+      document.getElementById('numClipsInput').value = val;
+      document.querySelectorAll('.clip-count-btn').forEach(btn => {
+        if (parseInt(btn.getAttribute('data-val')) === val) {
+          btn.className = 'clip-count-btn flex-1 py-1 text-xs rounded-lg font-semibold bg-indigo-600 text-white';
+        } else {
+          btn.className = 'clip-count-btn flex-1 py-1 text-xs rounded-lg font-semibold text-zinc-400 hover:text-white';
+        }
+      });
+    }
+
+    async function selectSubtitleTheme(theme) {
+      currentSubtitleTheme = theme;
+      const themeSelect = document.getElementById('subtitleThemeSelect');
+      if (themeSelect) themeSelect.value = theme;
+
+      const badgeNames = {
+        'hormozi': 'Hormozi Gold (#FFD700)',
+        'mrbeast': 'MrBeast Lime (#33FF00)',
+        'cyber': 'Cyber Cyan (#00FFFF)',
+        'crimson': 'Crimson Red (#FF0000)',
+        'classic_white': 'Classic White'
+      };
+      const badge = document.getElementById('activeStyleBadge');
+      if (badge) badge.textContent = badgeNames[theme] || theme;
+
+      document.querySelectorAll('.theme-pill').forEach(btn => {
+        const t = btn.getAttribute('data-theme');
+        if (t === theme) {
+          btn.className = 'theme-pill px-1 py-1.5 rounded-lg text-center text-[10px] font-bold border transition-all bg-indigo-600/20 border-indigo-500 text-white shadow-sm ring-1 ring-indigo-500/50 cursor-pointer';
+        } else {
+          btn.className = 'theme-pill px-1 py-1.5 rounded-lg text-center text-[10px] font-bold border transition-all bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700 cursor-pointer';
+        }
+      });
+
+      renderKaraokePreview();
+      await changeSubtitleTheme(theme);
+    }
+
     async function changeSubtitleTheme(theme) {
       try {
         await fetch('/api/set_theme', {
@@ -1575,11 +1781,8 @@ HTML_PAGE = """<!DOCTYPE html>
         const statusText = document.getElementById('statusText');
         const scanBtn = document.getElementById('scanBtn');
 
-        if (data.subtitle_theme) {
-          const themeSel = document.getElementById('subtitleThemeSelect');
-          if (themeSel && themeSel.value !== data.subtitle_theme && !themeSel.matches(':focus')) {
-            themeSel.value = data.subtitle_theme;
-          }
+        if (data.subtitle_theme && data.subtitle_theme !== currentSubtitleTheme) {
+          selectSubtitleTheme(data.subtitle_theme);
         }
 
         if (data.status === 'idle') {
