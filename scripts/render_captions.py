@@ -143,6 +143,7 @@ def build_ass_header(
     font_name: str = "Arial Black",
     is_bold: bool = True,
     is_italic: bool = False,
+    caption_format: str = "karaoke",
 ) -> str:
     cfg = THEME_STYLES.get(theme_name.lower(), THEME_STYLES["hormozi"])
     fsize = cfg["font_size"]
@@ -150,6 +151,16 @@ def build_ass_header(
     secondary = cfg["secondary_bgr"]
     outline = cfg["outline"]
     shadow = cfg["shadow"]
+    border_style = 1
+    back_colour = "&H90000000"
+
+    if caption_format == "box_highlight":
+        border_style = 3
+        outline = 6
+        shadow = 0
+        back_colour = "&HA0000000"  # Opaque rounded background pill
+    elif caption_format == "single_word":
+        fsize += 16  # Large punchy font for high-speed single word pop
 
     bold_val = -1 if is_bold else 0
     italic_val = -1 if is_italic else 0
@@ -161,7 +172,7 @@ def build_ass_header(
         margin_v = 420
 
     return f"""[Script Info]
-Title: AutoClip-AI Subtitles ({theme_name})
+Title: AutoClip-AI Subtitles ({theme_name} - {caption_format})
 ScriptType: v4.00+
 WrapStyle: 0
 ScaledBorderAndShadow: yes
@@ -171,7 +182,7 @@ PlayResY: 1920
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: ViralKaraoke,{font_name},{fsize},{primary},{secondary},&H00000000,&H90000000,{bold_val},{italic_val},0,0,100,100,2,0,1,{outline},{shadow},2,60,60,{margin_v},1
+Style: ViralKaraoke,{font_name},{fsize},{primary},{secondary},&H00000000,{back_colour},{bold_val},{italic_val},0,0,100,100,2,0,{border_style},{outline},{shadow},2,60,60,{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -212,6 +223,7 @@ def generate_karaoke_ass(
     is_bold: bool = True,
     is_italic: bool = False,
     is_uppercase: bool | None = None,
+    caption_format: str = "karaoke",
 ) -> str:
     with open(transcript_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -275,51 +287,76 @@ def generate_karaoke_ass(
                 }
             )
 
-    phrases = chunk_words_into_phrases(filtered_words, min_words=2, max_words=4)
-
     events = []
 
-    for phrase in phrases:
-        p_start = phrase[0]["start"]
-        p_end = phrase[-1]["end"]
-
-        for active_idx, active_word in enumerate(phrase):
-            w_start = active_word["start"]
-            w_end = active_word["end"]
-
-            # If there's a gap between words in phrase, extend slightly
-            if active_idx < len(phrase) - 1:
-                next_start = phrase[active_idx + 1]["start"]
+    # FORMAT 1: Single Word Pop (1 word at a time on screen)
+    if caption_format == "single_word":
+        for idx, w in enumerate(filtered_words):
+            w_start = w["start"]
+            w_end = w["end"]
+            if idx < len(filtered_words) - 1:
+                next_start = filtered_words[idx + 1]["start"]
                 if next_start > w_end:
                     w_end = next_start
-            else:
-                w_end = max(w_end, p_end)
-
-            # Build line text with active word highlighted
-            line_parts = []
-            for idx, w in enumerate(phrase):
-                clean_word = re.sub(r"[^\w\s\'\?!,\.-]", "", w["word"]).strip()
-                if not clean_word:
-                    continue
-                if idx == active_idx:
-                    line_parts.append(f"{highlight_tag}{clean_word}{default_tag}")
-                else:
-                    line_parts.append(f"{default_tag}{clean_word}")
-
-            line_text = " ".join(line_parts)
             start_str = format_ass_time(w_start)
             end_str = format_ass_time(w_end)
+            events.append(f"Dialogue: 0,{start_str},{end_str},ViralKaraoke,,0,0,0,,{highlight_tag}{w['word']}")
 
-            event_line = f"Dialogue: 0,{start_str},{end_str},ViralKaraoke,,0,0,0,,{line_text}"
-            events.append(event_line)
+    # FORMAT 2: Full Line Block (clean steady subtitle phrase, 4-7 words)
+    elif caption_format == "line_block":
+        phrases = chunk_words_into_phrases(filtered_words, min_words=4, max_words=7)
+        for phrase in phrases:
+            p_start = phrase[0]["start"]
+            p_end = phrase[-1]["end"]
+            phrase_text = " ".join(w["word"] for w in phrase)
+            start_str = format_ass_time(p_start)
+            end_str = format_ass_time(p_end)
+            events.append(f"Dialogue: 0,{start_str},{end_str},ViralKaraoke,,0,0,0,,{default_tag}{phrase_text}")
 
-    ass_content = build_ass_header(theme, position, font_name, is_bold, is_italic) + "\n".join(events) + "\n"
+    # FORMAT 3 & 4: Word Karaoke / Box Highlight (phrase with active word highlight)
+    else:
+        phrases = chunk_words_into_phrases(filtered_words, min_words=2, max_words=4)
+        for phrase in phrases:
+            p_start = phrase[0]["start"]
+            p_end = phrase[-1]["end"]
+
+            for active_idx, active_word in enumerate(phrase):
+                w_start = active_word["start"]
+                w_end = active_word["end"]
+
+                # If there's a gap between words in phrase, extend slightly
+                if active_idx < len(phrase) - 1:
+                    next_start = phrase[active_idx + 1]["start"]
+                    if next_start > w_end:
+                        w_end = next_start
+                else:
+                    w_end = max(w_end, p_end)
+
+                # Build line text with active word highlighted
+                line_parts = []
+                for idx, w in enumerate(phrase):
+                    clean_word = re.sub(r"[^\w\s\'\?!,\.-]", "", w["word"]).strip()
+                    if not clean_word:
+                        continue
+                    if idx == active_idx:
+                        line_parts.append(f"{highlight_tag}{clean_word}{default_tag}")
+                    else:
+                        line_parts.append(f"{default_tag}{clean_word}")
+
+                line_text = " ".join(line_parts)
+                start_str = format_ass_time(w_start)
+                end_str = format_ass_time(w_end)
+
+                event_line = f"Dialogue: 0,{start_str},{end_str},ViralKaraoke,,0,0,0,,{line_text}"
+                events.append(event_line)
+
+    ass_content = build_ass_header(theme, position, font_name, is_bold, is_italic, caption_format) + "\n".join(events) + "\n"
 
     os.makedirs(os.path.dirname(os.path.abspath(output_ass_path)), exist_ok=True)
     with open(output_ass_path, "w", encoding="utf-8") as f:
         f.write(ass_content)
 
-    print(f"[render_captions] Generated .ass subtitles with {len(events)} karaoke events (theme: {theme}, font: {font_name}, bold: {is_bold}, italic: {is_italic}) at {output_ass_path}")
+    print(f"[render_captions] Generated .ass subtitles with {len(events)} events (theme: {theme}, format: {caption_format}, font: {font_name}, bold: {is_bold}, italic: {is_italic}) at {output_ass_path}")
     return output_ass_path
 
 
@@ -391,6 +428,7 @@ def main():
     parser.add_argument("--italic", action="store_true", default=False, help="Make subtitles italic")
     parser.add_argument("--uppercase", action="store_true", default=True, help="Force uppercase words")
     parser.add_argument("--no-uppercase", dest="uppercase", action="store_false", help="Disable uppercase")
+    parser.add_argument("--format", default="karaoke", choices=["karaoke", "single_word", "line_block", "box_highlight"], help="Caption format (karaoke, single_word, line_block, box_highlight)")
     parser.add_argument("--ass-output", default="./temp_work/subtitles.ass", help="Intermediary ASS path")
     args = parser.parse_args()
 
@@ -405,6 +443,7 @@ def main():
         is_bold=args.bold,
         is_italic=args.italic,
         is_uppercase=args.uppercase,
+        caption_format=args.format,
     )
 
     burn_captions_to_video(
