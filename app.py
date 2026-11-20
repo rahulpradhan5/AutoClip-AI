@@ -112,11 +112,11 @@ def get_last_clipped_info() -> tuple[int, float]:
 
 class AppState:
     def __init__(self):
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.reset()
 
     def reset(self):
-        with getattr(self, "lock", threading.Lock()):
+        with getattr(self, "lock", threading.RLock()):
             self.status = "idle"  # idle, downloading, transcribing, detecting, timeframes_ready, clipping, completed, error
             self.progress_pct = 0
             self.stage_message = "Ready to start"
@@ -817,11 +817,13 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/status":
             refresh_approved_clips()
+            payload = json.dumps(state.to_dict()).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
-            self.wfile.write(json.dumps(state.to_dict()).encode("utf-8"))
+            self.wfile.write(payload)
             return
 
         if path == "/api/doctor":
@@ -830,11 +832,13 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
                 doc_data = run_diagnostics()
             except Exception as e:
                 doc_data = {"error": str(e)}
+            payload = json.dumps(doc_data).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
-            self.wfile.write(json.dumps(doc_data).encode("utf-8"))
+            self.wfile.write(payload)
             return
 
         if path == "/media/source":
@@ -974,6 +978,40 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"message": "Rendering started", "count": len(selected)}).encode("utf-8"))
             return
 
+        # Step 2b: Delete or clear detected hot moments
+        if path == "/api/clear-timeframes":
+            try:
+                data = json.loads(body) if body else {}
+                target_id = data.get("id")
+            except Exception:
+                target_id = None
+
+            with state.lock:
+                if target_id is not None:
+                    state.timeframes = [tf for tf in state.timeframes if tf.get("id") != target_id]
+                    state.log(f"Removed moment #{target_id} from detected list.")
+                else:
+                    state.timeframes = []
+                    hooks_path = TEMP_DIR / "viral_hooks.json"
+                    if hooks_path.exists():
+                        try:
+                            hooks_path.unlink()
+                        except Exception:
+                            pass
+                    if state.status == "timeframes_ready":
+                        state.status = "idle"
+                        state.stage_message = "Detected moments cleared. Ready to re-scan."
+                    state.log("🗑 Cleared all detected hot moments.")
+
+            resp_bytes = json.dumps({"success": True, "remaining": len(state.timeframes)}).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp_bytes)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(resp_bytes)
+            return
+
         # Step 3: Regenerate metadata for a clip on-demand
         if path == "/api/regenerate-metadata":
             try:
@@ -993,15 +1031,17 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
 
             new_title, new_hashtags = generate_clip_metadata(text, hook, clip_id, variation, video_title=v_title)
 
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(json.dumps({
+            resp_bytes = json.dumps({
                 "title": new_title,
                 "hashtags": new_hashtags,
                 "variation": variation
-            }).encode("utf-8"))
+            }).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp_bytes)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(resp_bytes)
             return
 
         # Step 4: Bulk approve drafts
@@ -1727,8 +1767,12 @@ HTML_PAGE = """<!DOCTYPE html>
                 <p class="text-[11px] text-zinc-400 mt-0.5">Click any card to preview in player. Check the clips you want to render.</p>
               </div>
               <div class="flex items-center space-x-2">
-                <button onclick="selectAllTimeframes(true)" class="text-xs text-indigo-400 hover:text-indigo-300 font-medium px-2 py-1 bg-zinc-800 rounded cursor-pointer">Select All</button>
-                <button onclick="selectAllTimeframes(false)" class="text-xs text-zinc-400 hover:text-zinc-200 font-medium px-2 py-1 bg-zinc-800 rounded cursor-pointer">Clear</button>
+                <button onclick="selectAllTimeframes(true)" class="text-xs text-indigo-400 hover:text-indigo-300 font-medium px-2 py-1 bg-zinc-800 rounded cursor-pointer transition-all">Select All</button>
+                <button onclick="selectAllTimeframes(false)" class="text-xs text-zinc-400 hover:text-zinc-200 font-medium px-2 py-1 bg-zinc-800 rounded cursor-pointer transition-all">Uncheck All</button>
+                <button onclick="deleteAllTimeframes()" class="text-xs text-red-400 hover:text-red-300 font-medium px-2.5 py-1 bg-red-950/40 border border-red-900/50 hover:bg-red-900/50 rounded cursor-pointer flex items-center space-x-1 transition-all shadow-sm" title="Delete all detected moments (vanish from list, re-scan to regenerate)">
+                  <i class="fa-solid fa-trash-can text-[10px]"></i>
+                  <span>Delete All</span>
+                </button>
               </div>
             </div>
 
@@ -2515,6 +2559,10 @@ HTML_PAGE = """<!DOCTYPE html>
                   <i class="fa-solid fa-play text-[10px] mr-1"></i>
                   <span>Preview</span>
                 </button>
+                <button onclick="deleteSingleTimeframe(${index}, ${tf.id})" 
+                  class="text-xs px-2 py-1 rounded-md bg-zinc-800 hover:bg-red-950/80 hover:text-red-400 text-zinc-400 transition-all cursor-pointer border border-transparent hover:border-red-900/40" title="Delete this moment">
+                  <i class="fa-solid fa-trash-can text-[10px]"></i>
+                </button>
               </div>
             </div>
 
@@ -2617,6 +2665,46 @@ HTML_PAGE = """<!DOCTYPE html>
         if (chk) chk.checked = selectVal;
       });
       updateSelectedCount();
+    }
+
+    async function deleteAllTimeframes() {
+      if (loadedTimeframes.length === 0) return;
+      if (!confirm("Are you sure you want to delete all detected moments? They will vanish from the list. You can re-scan and regenerate them anytime.")) {
+        return;
+      }
+      try {
+        const res = await fetch('/api/clear-timeframes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        if (res.ok) {
+          loadedTimeframes = [];
+          lastTimeframesFingerprint = "";
+          renderTimeframes([]);
+          updateSelectedCount();
+        }
+      } catch (err) {
+        console.error('Failed to clear timeframes:', err);
+      }
+    }
+
+    async function deleteSingleTimeframe(index, tfId) {
+      try {
+        const res = await fetch('/api/clear-timeframes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: tfId })
+        });
+        if (res.ok) {
+          loadedTimeframes = loadedTimeframes.filter(tf => tf.id !== tfId);
+          lastTimeframesFingerprint = "";
+          renderTimeframes(loadedTimeframes);
+          updateSelectedCount();
+        }
+      } catch (err) {
+        console.error('Failed to delete timeframe:', err);
+      }
     }
 
     function updateSelectedCount() {
