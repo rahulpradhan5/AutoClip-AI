@@ -31,6 +31,8 @@ SCOPES = [
 
 _auth_flow_instance = None
 _auth_flow_lock = threading.Lock()
+_active_auth_flow = None
+_active_auth_lock = threading.Lock()
 
 
 def ensure_credentials_dir():
@@ -136,7 +138,22 @@ def save_client_secrets(secrets_data: Any) -> bool:
     ensure_credentials_dir()
     try:
         if isinstance(secrets_data, str):
-            secrets_data = json.loads(secrets_data)
+            clean_str = secrets_data.strip()
+            # If multiple JSON objects were pasted or trailing characters exist, extract first JSON
+            if clean_str.startswith("{"):
+                depth = 0
+                end_pos = -1
+                for idx, ch in enumerate(clean_str):
+                    if ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            end_pos = idx + 1
+                            break
+                if end_pos != -1:
+                    clean_str = clean_str[:end_pos]
+            secrets_data = json.loads(clean_str)
 
         # Ensure correct structure
         if "installed" not in secrets_data and "web" not in secrets_data:
@@ -165,11 +182,31 @@ def save_client_secrets(secrets_data: Any) -> bool:
 
 
 def save_token_json(token_data: Any) -> bool:
-    """Directly save token JSON if user pastes token credentials."""
+    """Directly save token JSON if user pastes token credentials, or route to client_secrets if that was pasted."""
     ensure_credentials_dir()
     try:
         if isinstance(token_data, str):
-            token_data = json.loads(token_data)
+            clean_str = token_data.strip()
+            if clean_str.startswith("{"):
+                depth = 0
+                end_pos = -1
+                for idx, ch in enumerate(clean_str):
+                    if ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            end_pos = idx + 1
+                            break
+                if end_pos != -1:
+                    clean_str = clean_str[:end_pos]
+            token_data = json.loads(clean_str)
+
+        # Smart fallback: if user pasted client_secrets.json here by mistake
+        if isinstance(token_data, dict) and ("installed" in token_data or "web" in token_data or ("client_secret" in token_data and "refresh_token" not in token_data)):
+            logger.info("Detected client_secrets in token paste input. Routing to save_client_secrets.")
+            return save_client_secrets(token_data)
+
         with open(TOKEN_FILE, "w", encoding="utf-8") as f:
             json.dump(token_data, f, indent=2)
         return True
@@ -191,39 +228,94 @@ def disconnect() -> bool:
 
 def start_local_auth(port: int = 8089, timeout_sec: int = 120, on_complete: Optional[Callable] = None) -> Dict[str, Any]:
     """
-    Launches a local server flow on `port` (e.g. 8089) and opens user's browser
-    to grant permissions, then captures credentials.
+    Launches a local server flow on `port` (e.g. 8089), generates auth_url immediately,
+    and listens on localhost for the Google OAuth redirect.
     """
+    global _active_auth_flow
     if not os.path.exists(CLIENT_SECRETS_FILE):
         return {"error": "client_secrets.json not found. Please upload or configure your Google Cloud OAuth Client credentials first."}
 
-    def _run_flow():
-        try:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                CLIENT_SECRETS_FILE,
-                scopes=SCOPES
-            )
-            # Run local webserver to handle auth callback
-            creds = flow.run_local_server(
-                host="localhost",
-                port=port,
-                authorization_prompt_message="Open this link in your browser to authorize AutoClip-AI: {url}",
-                success_message="AutoClip-AI is now connected to your YouTube Studio! You can close this tab.",
-                open_browser=True
-            )
-            with open(TOKEN_FILE, "w", encoding="utf-8") as f:
-                f.write(creds.to_json())
-            logger.info("YouTube Studio connected successfully!")
-            if on_complete:
-                on_complete(True, None)
-        except Exception as e:
-            logger.error(f"Local auth flow failed: {e}")
-            if on_complete:
-                on_complete(False, str(e))
+    try:
+        flow = InstalledAppFlow.from_client_secrets_file(
+            CLIENT_SECRETS_FILE,
+            scopes=SCOPES,
+            redirect_uri=f"http://localhost:{port}/"
+        )
+        auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
 
-    thread = threading.Thread(target=_run_flow, daemon=True)
-    thread.start()
-    return {"status": "started", "port": port, "message": "Authentication server started. Your browser should open to complete Google sign-in."}
+        with _active_auth_lock:
+            _active_auth_flow = flow
+
+        def _run_flow():
+            try:
+                creds = flow.run_local_server(
+                    host="localhost",
+                    port=port,
+                    authorization_prompt_message="Open this link in your browser to authorize AutoClip-AI: {url}",
+                    success_message="AutoClip-AI is now connected to your YouTube Studio! You can close this tab and return to the app.",
+                    open_browser=False
+                )
+                with open(TOKEN_FILE, "w", encoding="utf-8") as f:
+                    f.write(creds.to_json())
+                logger.info("YouTube Studio connected successfully via local redirect!")
+                if on_complete:
+                    on_complete(True, None)
+            except Exception as e:
+                logger.error(f"Local auth flow failed or finished: {e}")
+                if on_complete:
+                    on_complete(False, str(e))
+
+        thread = threading.Thread(target=_run_flow, daemon=True)
+        thread.start()
+
+        return {
+            "status": "started",
+            "port": port,
+            "auth_url": auth_url,
+            "message": "Authentication server started. Open the link to authorize."
+        }
+    except Exception as e:
+        logger.error(f"Failed to start OAuth flow: {e}")
+        return {"error": str(e)}
+
+
+def exchange_auth_code(code_or_url: str) -> Dict[str, Any]:
+    """Exchanges an authorization code or full redirect URL for tokens."""
+    global _active_auth_flow
+    ensure_credentials_dir()
+    clean_code = code_or_url.strip()
+
+    if "code=" in clean_code:
+        import urllib.parse
+        parsed = urllib.parse.urlparse(clean_code)
+        qs = urllib.parse.parse_qs(parsed.query)
+        extracted = qs.get("code")
+        if extracted:
+            clean_code = extracted[0]
+
+    with _active_auth_lock:
+        flow = _active_auth_flow
+
+    if not flow and os.path.exists(CLIENT_SECRETS_FILE):
+        flow = InstalledAppFlow.from_client_secrets_file(
+            CLIENT_SECRETS_FILE,
+            scopes=SCOPES,
+            redirect_uri="http://localhost:8089/"
+        )
+
+    if not flow:
+        return {"error": "No active authentication flow or client_secrets.json"}
+
+    try:
+        flow.fetch_token(code=clean_code)
+        creds = flow.credentials
+        with open(TOKEN_FILE, "w", encoding="utf-8") as f:
+            f.write(creds.to_json())
+        info = get_channel_info(creds)
+        return {"success": True, "channel": info}
+    except Exception as e:
+        logger.error(f"Error exchanging code: {e}")
+        return {"error": f"Failed to exchange authorization code: {e}"}
 
 
 def upload_short(

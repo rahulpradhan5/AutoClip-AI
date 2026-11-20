@@ -1464,6 +1464,26 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(e))
                 return
 
+        # YouTube Studio: Exchange code or callback URL
+        if path == "/api/youtube/exchange-code":
+            try:
+                data = json.loads(body) if body else {}
+                code_str = data.get("code") or data.get("url") or ""
+                res_obj = youtube_uploader.exchange_auth_code(code_str) if youtube_uploader else {"error": "Module unavailable"}
+                status_info = youtube_uploader.get_status() if youtube_uploader else {}
+                res_obj["status"] = status_info
+                resp_bytes = json.dumps(res_obj).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp_bytes)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(resp_bytes)
+                return
+            except Exception as e:
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(e))
+                return
+
         # YouTube Studio: Direct Upload Short
         if path == "/api/youtube/upload":
             if not youtube_uploader:
@@ -2386,6 +2406,29 @@ HTML_PAGE = """<!DOCTYPE html>
               <i class="fa-brands fa-google text-sm"></i>
               <span>Sign in with Google &amp; Connect YouTube</span>
             </button>
+
+            <!-- Direct Clickable Auth Link (if popup blocked or browser didn't pop up) -->
+            <div id="ytAuthLinkBox" class="hidden space-y-2 p-3 bg-zinc-900 border border-indigo-700/60 rounded-xl text-center">
+              <div class="text-xs text-zinc-300 font-medium">Browser didn't open automatically?</div>
+              <a id="ytDirectAuthLink" href="#" target="_blank" class="inline-flex items-center space-x-2 px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-bold text-xs rounded-lg shadow-md transition-all">
+                <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                <span>Open Google Sign-In Window</span>
+              </a>
+              <p class="text-[10px] text-zinc-400">Sign in with your Google account, then return here.</p>
+            </div>
+
+            <!-- Manual Code or Callback URL Paste Fallback -->
+            <div id="ytManualCodeSection" class="hidden pt-2 border-t border-zinc-900 space-y-2">
+              <label class="text-[11px] font-semibold text-zinc-400">Paste Authorization Code or Redirect URL:</label>
+              <div class="flex space-x-2">
+                <input type="text" id="ytAuthCodeInput" placeholder="Paste 4/0A... or http://localhost:8089/?code=..." 
+                  class="flex-1 bg-zinc-900 border border-zinc-800 focus:border-red-500 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 font-mono">
+                <button onclick="submitAuthCodeOrUrl()" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold transition-all cursor-pointer">
+                  Verify &amp; Connect
+                </button>
+              </div>
+            </div>
+
             <div id="ytAuthStatusMsg" class="hidden text-xs text-center p-2 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-300"></div>
 
             <!-- Alternative manual token paste -->
@@ -2980,11 +3023,18 @@ HTML_PAGE = """<!DOCTYPE html>
     async function saveOAuthSecretsData(jsonString) {
       try {
         let parsed;
+        let str = (jsonString || '').trim();
+        // Auto-extract first valid JSON object in case of accidental wrapping/trailing chars
+        const firstBrace = str.indexOf('{');
+        const lastBrace = str.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace > firstBrace) {
+          str = str.substring(firstBrace, lastBrace + 1);
+        }
         try {
-          parsed = JSON.parse(jsonString);
+          parsed = JSON.parse(str);
         } catch (err) {
-          alert('Invalid JSON formatting. Please check your credentials syntax.');
-          return;
+          alert('Invalid JSON formatting: ' + err.message + '\nPlease check your credentials syntax.');
+          return false;
         }
 
         const res = await fetch('/api/youtube/save-secrets', {
@@ -2996,17 +3046,24 @@ HTML_PAGE = """<!DOCTYPE html>
         if (res.ok && data.success) {
           alert('✓ Google Cloud OAuth credentials saved successfully! Now click Step 2 to sign in.');
           checkYouTubeStatus();
+          return true;
         } else {
           alert('Failed to save client secrets: ' + (data.error || 'Unknown error'));
+          return false;
         }
       } catch (e) {
         alert('Network error saving secrets: ' + e.message);
+        return false;
       }
     }
 
     async function startYouTubeOAuthFlow() {
       const btn = document.getElementById('ytAuthLaunchBtn');
       const msg = document.getElementById('ytAuthStatusMsg');
+      const linkBox = document.getElementById('ytAuthLinkBox');
+      const directLink = document.getElementById('ytDirectAuthLink');
+      const manualSec = document.getElementById('ytManualCodeSection');
+
       if (btn) {
         btn.disabled = true;
         btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i><span>Opening Google Sign-in...</span>';
@@ -3032,6 +3089,20 @@ HTML_PAGE = """<!DOCTYPE html>
           return;
         }
 
+        // Show direct link button and manual code box immediately if auth_url returned
+        if (data.auth_url) {
+          if (directLink) directLink.href = data.auth_url;
+          if (linkBox) linkBox.classList.remove('hidden');
+          if (manualSec) manualSec.classList.remove('hidden');
+
+          // Attempt to open in a new tab/window directly from browser
+          try {
+            window.open(data.auth_url, '_blank');
+          } catch (winErr) {
+            console.warn('Popup blocked by browser:', winErr);
+          }
+        }
+
         // Poll for connection completion
         let attempts = 0;
         const pollConn = setInterval(async () => {
@@ -3045,10 +3116,12 @@ HTML_PAGE = """<!DOCTYPE html>
               btn.disabled = false;
               btn.innerHTML = '<i class="fa-brands fa-google text-sm mr-1"></i><span>Connected</span>';
             }
+            if (linkBox) linkBox.classList.add('hidden');
+            if (manualSec) manualSec.classList.add('hidden');
             updateYouTubeUI(checkData);
-          } else if (attempts >= 45) { // 90 seconds timeout
+          } else if (attempts >= 60) { // 120 seconds timeout
             clearInterval(pollConn);
-            if (msg) msg.innerHTML = '<span class="text-amber-400">Authentication timed out. Please try again.</span>';
+            if (msg) msg.innerHTML = '<span class="text-amber-400">Authentication timed out. If browser did not redirect, copy the code/URL from your address bar and paste it in the box above.</span>';
             if (btn) {
               btn.disabled = false;
               btn.innerHTML = '<i class="fa-brands fa-google text-sm mr-1"></i><span>Sign in with Google & Connect YouTube</span>';
@@ -3064,12 +3137,71 @@ HTML_PAGE = """<!DOCTYPE html>
       }
     }
 
-    async function saveDirectTokenJson() {
-      const text = document.getElementById('ytTokenJsonInput').value.trim();
-      if (!text) {
-        alert('Please paste valid token JSON');
+    async function submitAuthCodeOrUrl() {
+      const input = document.getElementById('ytAuthCodeInput');
+      const val = input ? input.value.trim() : '';
+      const msg = document.getElementById('ytAuthStatusMsg');
+      const linkBox = document.getElementById('ytAuthLinkBox');
+      const manualSec = document.getElementById('ytManualCodeSection');
+
+      if (!val) {
+        alert('Please paste the authorization code or redirect URL from your browser address bar.');
         return;
       }
+
+      if (msg) {
+        msg.classList.remove('hidden');
+        msg.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-red-500 mr-1.5"></i> Exchanging authorization code with YouTube...';
+      }
+
+      try {
+        const res = await fetch('/api/youtube/exchange-code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: val })
+        });
+        const data = await res.json();
+        if (data.success && data.status && data.status.connected) {
+          if (msg) msg.innerHTML = '<span class="text-emerald-400 font-bold">✓ Successfully connected to YouTube Studio!</span>';
+          alert('✓ YouTube Studio connected successfully!');
+          if (linkBox) linkBox.classList.add('hidden');
+          if (manualSec) manualSec.classList.add('hidden');
+          checkYouTubeStatus();
+        } else {
+          const errMsg = data.error || data.status?.error || 'Verification failed';
+          if (msg) msg.innerHTML = `<span class="text-red-400 font-bold">Error: ${escapeHtml(errMsg)}</span>`;
+          alert('Connection failed: ' + errMsg);
+        }
+      } catch (e) {
+        if (msg) msg.innerHTML = `<span class="text-red-400">Network error: ${escapeHtml(e.message)}</span>`;
+        alert('Network error: ' + e.message);
+      }
+    }
+
+    async function saveDirectTokenJson() {
+      const rawText = document.getElementById('ytTokenJsonInput').value.trim();
+      if (!rawText) {
+        alert('Please paste valid credentials JSON');
+        return;
+      }
+
+      // Check if user accidentally pasted client_secrets instead of token.json
+      if (rawText.includes('"installed"') || (rawText.includes('"client_id"') && rawText.includes('"client_secret"') && !rawText.includes('"refresh_token"'))) {
+        const ok = await saveOAuthSecretsData(rawText);
+        if (ok) {
+          alert('✓ Detected OAuth Client Credentials! Saved to client_secrets.json.\n\nNow click "Sign in with Google & Connect YouTube" to finish connecting.');
+        }
+        return;
+      }
+
+      // Extract JSON substring if user copied extra characters
+      let text = rawText;
+      const firstBrace = text.indexOf('{');
+      const lastBrace = text.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace > firstBrace) {
+        text = text.substring(firstBrace, lastBrace + 1);
+      }
+
       try {
         const tokenObj = JSON.parse(text);
         const res = await fetch('/api/youtube/connect', {
@@ -3085,7 +3217,7 @@ HTML_PAGE = """<!DOCTYPE html>
           alert('Invalid token or connection failed: ' + (data.status?.error || 'Unknown error'));
         }
       } catch (e) {
-        alert('Error parsing token JSON: ' + e.message);
+        alert('Error parsing token JSON: ' + e.message + '\n\nTip: If you downloaded client_secret_*.json from Google Cloud Console, paste it in "Step 1: Save Credentials", not here.');
       }
     }
 
@@ -4451,9 +4583,6 @@ HTML_PAGE = """<!DOCTYPE html>
       const tags = (document.getElementById('final_tags_' + cardId) || {}).value || '';
 
       openPublishModalWithData(filename, title, desc, tags, hook, 'final', timestamps);
-    }
-
-      initLazyMediaObserver();
     }
 
     let lazyMediaObserver = null;
