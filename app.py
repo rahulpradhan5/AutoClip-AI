@@ -133,6 +133,10 @@ class AppState:
             self.target_clips = 3
             self.subtitle_theme = "hormozi"
             self.subtitle_position = "bottom"
+            self.subtitle_font = "Arial Black"
+            self.subtitle_bold = True
+            self.subtitle_italic = False
+            self.subtitle_uppercase = True
             self.last_clipped_num = 0
             self.last_clipped_end_sec = 0.0
             self.download_info = {
@@ -171,6 +175,10 @@ class AppState:
                 "target_clips": self.target_clips,
                 "subtitle_theme": getattr(self, "subtitle_theme", "hormozi"),
                 "subtitle_position": getattr(self, "subtitle_position", "bottom"),
+                "subtitle_font": getattr(self, "subtitle_font", "Arial Black"),
+                "subtitle_bold": getattr(self, "subtitle_bold", True),
+                "subtitle_italic": getattr(self, "subtitle_italic", False),
+                "subtitle_uppercase": getattr(self, "subtitle_uppercase", True),
                 "download_info": dict(self.download_info),
                 "last_clipped_num": max_num,
                 "last_clipped_end_sec": max_end,
@@ -609,6 +617,11 @@ def run_render_worker(selected_moments: list[dict]):
             state.log(f"Burning 60 FPS karaoke captions with color grading & unsharp mask...")
             theme_choice = getattr(state, "subtitle_theme", "hormozi")
             position_choice = getattr(state, "subtitle_position", "bottom")
+            font_choice = getattr(state, "subtitle_font", "Arial Black")
+            bold_choice = getattr(state, "subtitle_bold", True)
+            italic_choice = getattr(state, "subtitle_italic", False)
+            uppercase_choice = getattr(state, "subtitle_uppercase", True)
+
             captions_cmd = [
                 PYTHON_EXE,
                 str(SCRIPTS_DIR / "render_captions.py"),
@@ -620,8 +633,19 @@ def run_render_worker(selected_moments: list[dict]):
                 "--ass-output", str(ass_path),
                 "--theme", theme_choice,
                 "--position", position_choice,
+                "--font", font_choice,
                 "--fps", "60",
             ]
+            if bold_choice:
+                captions_cmd.append("--bold")
+            else:
+                captions_cmd.append("--no-bold")
+            if italic_choice:
+                captions_cmd.append("--italic")
+            if uppercase_choice:
+                captions_cmd.append("--uppercase")
+            else:
+                captions_cmd.append("--no-uppercase")
             k_res = subprocess.run(captions_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=dict(os.environ, PYTHONIOENCODING="utf-8"))
             if k_res.returncode != 0:
                 state.log(f"Caption render error: {k_res.stderr[-300:]}")
@@ -800,16 +824,32 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/set_theme":
             try:
                 data = json.loads(body) if body else {}
-                theme = data.get("theme", "hormozi")
-                position = data.get("position", "bottom")
+                theme = data.get("theme", getattr(state, "subtitle_theme", "hormozi"))
+                position = data.get("position", getattr(state, "subtitle_position", "bottom"))
+                font = data.get("font", getattr(state, "subtitle_font", "Arial Black"))
+                bold = data.get("bold", getattr(state, "subtitle_bold", True))
+                italic = data.get("italic", getattr(state, "subtitle_italic", False))
+                uppercase = data.get("uppercase", getattr(state, "subtitle_uppercase", True))
                 with state.lock:
                     state.subtitle_theme = theme
                     state.subtitle_position = position
-                state.log(f"Subtitle style updated: {theme.upper()} (Position: {position.upper()})")
+                    state.subtitle_font = font
+                    state.subtitle_bold = bool(bold)
+                    state.subtitle_italic = bool(italic)
+                    state.subtitle_uppercase = bool(uppercase)
+                state.log(f"Subtitle style updated: {theme.upper()} | Font: {font} (Bold: {bold}, Italic: {italic}, Caps: {uppercase}) | Pos: {position.upper()}")
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(json.dumps({"success": True, "theme": theme, "position": position}).encode("utf-8"))
+                self.wfile.write(json.dumps({
+                    "success": True,
+                    "theme": theme,
+                    "position": position,
+                    "font": font,
+                    "bold": bold,
+                    "italic": italic,
+                    "uppercase": uppercase,
+                }).encode("utf-8"))
                 return
             except Exception as e:
                 self.send_response(HTTPStatus.BAD_REQUEST)
@@ -1094,6 +1134,9 @@ HTML_PAGE = """<!DOCTYPE html>
       }
     }
   </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,700;0,800;0,900;1,700;1,900&family=Roboto:ital,wght@0,700;0,900;1,700;1,900&display=swap" rel="stylesheet">
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
   <style>
     ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -1111,7 +1154,9 @@ HTML_PAGE = """<!DOCTYPE html>
       display: inline-block;
       margin: 0 4px;
       transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
-      font-family: 'Arial Black', Impact, sans-serif;
+      font-family: inherit;
+      font-style: inherit;
+      font-weight: inherit;
     }
     .theme-hormozi .word-active {
       color: #FFD700 !important;
@@ -1233,10 +1278,10 @@ HTML_PAGE = """<!DOCTYPE html>
   <main class="flex-1 max-w-[1700px] w-full mx-auto p-4 sm:p-6 space-y-6">
 
     <!-- TOP SECTION: Left 1/3 (Ingestion & Captions Studio) vs Right 2/3 (Source Player, Kernel Logs, Hot Moments) -->
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
 
       <!-- LEFT 1/3 COLUMN (lg:col-span-4): Video Ingestion & Captions Style Studio -->
-      <div class="lg:col-span-4 space-y-6">
+      <div class="lg:col-span-4 flex flex-col space-y-6">
 
         <!-- CARD 1: Video Ingestion & Pipeline Launcher -->
         <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-4">
@@ -1303,108 +1348,164 @@ HTML_PAGE = """<!DOCTYPE html>
           </div>
         </div>
 
-        <!-- CARD 2: Captions Style Studio & Live 9:16 Mockup -->
-        <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-4">
-          <div class="flex items-center justify-between border-b border-zinc-800/80 pb-3">
-            <div class="flex items-center space-x-2">
-              <div class="w-7 h-7 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
-                <i class="fa-solid fa-closed-captioning text-amber-400 text-xs"></i>
+        <!-- CARD 2: Captions Style Studio & Live 9:16 Mockup (Height-Symmetric flex-1) -->
+        <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-xl flex-1 flex flex-col justify-between space-y-4">
+          <div class="space-y-4">
+            <div class="flex items-center justify-between border-b border-zinc-800/80 pb-3">
+              <div class="flex items-center space-x-2">
+                <div class="w-7 h-7 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
+                  <i class="fa-solid fa-closed-captioning text-amber-400 text-xs"></i>
+                </div>
+                <div>
+                  <h3 class="text-xs font-bold text-zinc-100 uppercase tracking-wider">Captions Studio</h3>
+                  <p class="text-[10px] text-zinc-400">8 Themes • Custom Fonts • 60 FPS Burned</p>
+                </div>
               </div>
+              <span id="activeStyleBadge" class="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 truncate max-w-[130px]">Hormozi Gold</span>
+            </div>
+
+            <!-- Hidden select for compatibility -->
+            <select id="subtitleThemeSelect" class="hidden">
+              <option value="hormozi" selected>Hormozi Gold</option>
+              <option value="mrbeast">MrBeast Lime</option>
+              <option value="cyber">Cyber Cyan</option>
+              <option value="crimson">Crimson Red</option>
+              <option value="sunset">Sunset Orange</option>
+              <option value="bubblegum">Bubblegum Pink</option>
+              <option value="violet">Electric Purple</option>
+              <option value="classic_white">Classic White</option>
+            </select>
+
+            <!-- 8 Themes Grid -->
+            <div>
+              <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block mb-1.5">Color Aesthetic</span>
+              <div class="grid grid-cols-2 gap-2" id="stylePillsGroup">
+                <button type="button" onclick="selectSubtitleTheme('hormozi')" data-theme="hormozi"
+                  class="theme-pill p-2 rounded-xl border text-left transition-all bg-indigo-600/20 border-indigo-500 text-white shadow-sm ring-1 ring-indigo-500/40 cursor-pointer flex items-center space-x-2">
+                  <span class="w-3.5 h-3.5 rounded-full bg-[#FFD700] shrink-0 border border-black/30"></span>
+                  <span class="text-[11px] font-bold truncate">Hormozi Gold</span>
+                </button>
+
+                <button type="button" onclick="selectSubtitleTheme('mrbeast')" data-theme="mrbeast"
+                  class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
+                  <span class="w-3.5 h-3.5 rounded-full bg-[#33FF00] shrink-0 border border-black/30"></span>
+                  <span class="text-[11px] font-bold truncate">MrBeast Lime</span>
+                </button>
+
+                <button type="button" onclick="selectSubtitleTheme('cyber')" data-theme="cyber"
+                  class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
+                  <span class="w-3.5 h-3.5 rounded-full bg-[#00FFFF] shrink-0 border border-black/30"></span>
+                  <span class="text-[11px] font-bold truncate">Cyber Cyan</span>
+                </button>
+
+                <button type="button" onclick="selectSubtitleTheme('crimson')" data-theme="crimson"
+                  class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
+                  <span class="w-3.5 h-3.5 rounded-full bg-[#FF2233] shrink-0 border border-black/30"></span>
+                  <span class="text-[11px] font-bold truncate">Crimson Red</span>
+                </button>
+
+                <button type="button" onclick="selectSubtitleTheme('sunset')" data-theme="sunset"
+                  class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
+                  <span class="w-3.5 h-3.5 rounded-full bg-[#FF7700] shrink-0 border border-black/30"></span>
+                  <span class="text-[11px] font-bold truncate">Sunset Orange</span>
+                </button>
+
+                <button type="button" onclick="selectSubtitleTheme('bubblegum')" data-theme="bubblegum"
+                  class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
+                  <span class="w-3.5 h-3.5 rounded-full bg-[#FF1493] shrink-0 border border-black/30"></span>
+                  <span class="text-[11px] font-bold truncate">Bubblegum</span>
+                </button>
+
+                <button type="button" onclick="selectSubtitleTheme('violet')" data-theme="violet"
+                  class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
+                  <span class="w-3.5 h-3.5 rounded-full bg-[#BF00FF] shrink-0 border border-black/30"></span>
+                  <span class="text-[11px] font-bold truncate">Electric Violet</span>
+                </button>
+
+                <button type="button" onclick="selectSubtitleTheme('classic_white')" data-theme="classic_white"
+                  class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
+                  <span class="w-3.5 h-3.5 rounded-full bg-white shrink-0 border border-black/30"></span>
+                  <span class="text-[11px] font-bold truncate">Classic White</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Font Family Selector (6 Viral Fonts) -->
+            <div>
+              <div class="flex items-center justify-between mb-1.5">
+                <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Font Family</span>
+                <span id="activeFontLabel" class="text-[10px] font-mono text-indigo-400 font-semibold">Arial Black</span>
+              </div>
+              <div class="grid grid-cols-3 gap-1.5" id="fontPillsGroup">
+                <button type="button" onclick="selectSubtitleFont('Arial Black')" data-font="Arial Black" 
+                  class="font-pill py-1.5 px-2 rounded-lg border text-[11px] font-black transition-all bg-indigo-600/20 border-indigo-500 text-white shadow-sm ring-1 ring-indigo-500/40 cursor-pointer text-center truncate" style="font-family: 'Arial Black', sans-serif;">
+                  Arial Black
+                </button>
+                <button type="button" onclick="selectSubtitleFont('Impact')" data-font="Impact" 
+                  class="font-pill py-1.5 px-2 rounded-lg border text-[11px] font-bold transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer text-center truncate" style="font-family: Impact, sans-serif;">
+                  Impact
+                </button>
+                <button type="button" onclick="selectSubtitleFont('Montserrat')" data-font="Montserrat" 
+                  class="font-pill py-1.5 px-2 rounded-lg border text-[11px] font-extrabold transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer text-center truncate" style="font-family: 'Montserrat', sans-serif;">
+                  Montserrat
+                </button>
+                <button type="button" onclick="selectSubtitleFont('Trebuchet MS')" data-font="Trebuchet MS" 
+                  class="font-pill py-1.5 px-2 rounded-lg border text-[11px] font-bold transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer text-center truncate" style="font-family: 'Trebuchet MS', sans-serif;">
+                  Trebuchet
+                </button>
+                <button type="button" onclick="selectSubtitleFont('Verdana')" data-font="Verdana" 
+                  class="font-pill py-1.5 px-2 rounded-lg border text-[11px] font-bold transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer text-center truncate" style="font-family: Verdana, sans-serif;">
+                  Verdana
+                </button>
+                <button type="button" onclick="selectSubtitleFont('Roboto')" data-font="Roboto" 
+                  class="font-pill py-1.5 px-2 rounded-lg border text-[11px] font-black transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer text-center truncate" style="font-family: 'Roboto', sans-serif;">
+                  Roboto
+                </button>
+              </div>
+            </div>
+
+            <!-- Font Formatting Toggles & Screen Placement -->
+            <div class="grid grid-cols-2 gap-2 pt-1">
               <div>
-                <h3 class="text-xs font-bold text-zinc-100 uppercase tracking-wider">Captions Studio</h3>
-                <p class="text-[10px] text-zinc-400">8 Themes • 60 FPS Burned</p>
+                <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block mb-1">Formatting</span>
+                <div class="flex items-center space-x-1 bg-zinc-950 border border-zinc-800 rounded-xl p-1">
+                  <button type="button" id="fontBoldBtn" onclick="toggleSubtitleBold()" 
+                    class="flex-1 py-1 text-xs rounded-lg font-black bg-indigo-600 text-white cursor-pointer transition-all shadow-sm" title="Toggle Bold">
+                    <b>B</b>
+                  </button>
+                  <button type="button" id="fontItalicBtn" onclick="toggleSubtitleItalic()" 
+                    class="flex-1 py-1 text-xs rounded-lg font-serif italic bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-white cursor-pointer transition-all" title="Toggle Italic">
+                    <i>I</i>
+                  </button>
+                  <button type="button" id="fontCapsBtn" onclick="toggleSubtitleCaps()" 
+                    class="flex-1 py-1 text-[10px] rounded-lg font-bold bg-indigo-600 text-white cursor-pointer transition-all shadow-sm" title="Toggle ALL CAPS / Natural Case">
+                    AA
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block mb-1">Position</span>
+                <div class="flex items-center space-x-1 bg-zinc-950 border border-zinc-800 rounded-xl p-1">
+                  <button type="button" onclick="setSubtitlePosition('bottom')" id="posBtn_bottom"
+                    class="pos-btn flex-1 py-1 text-[11px] rounded-lg font-bold bg-indigo-600 text-white cursor-pointer">
+                    Bottom
+                  </button>
+                  <button type="button" onclick="setSubtitlePosition('lower_third')" id="posBtn_lower_third"
+                    class="pos-btn flex-1 py-1 text-[11px] rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer">
+                    Low-3rd
+                  </button>
+                  <button type="button" onclick="setSubtitlePosition('center')" id="posBtn_center"
+                    class="pos-btn flex-1 py-1 text-[11px] rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer">
+                    Center
+                  </button>
+                </div>
               </div>
             </div>
-            <span id="activeStyleBadge" class="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 truncate max-w-[130px]">Hormozi Gold</span>
           </div>
 
-          <!-- Hidden select for compatibility -->
-          <select id="subtitleThemeSelect" class="hidden">
-            <option value="hormozi" selected>Hormozi Gold</option>
-            <option value="mrbeast">MrBeast Lime</option>
-            <option value="cyber">Cyber Cyan</option>
-            <option value="crimson">Crimson Red</option>
-            <option value="sunset">Sunset Orange</option>
-            <option value="bubblegum">Bubblegum Pink</option>
-            <option value="violet">Electric Purple</option>
-            <option value="classic_white">Classic White</option>
-          </select>
-
-          <!-- 8 Themes Grid -->
-          <div>
-            <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block mb-2">Caption Theme</span>
-            <div class="grid grid-cols-2 gap-2" id="stylePillsGroup">
-              <button type="button" onclick="selectSubtitleTheme('hormozi')" data-theme="hormozi"
-                class="theme-pill p-2 rounded-xl border text-left transition-all bg-indigo-600/20 border-indigo-500 text-white shadow-sm ring-1 ring-indigo-500/40 cursor-pointer flex items-center space-x-2">
-                <span class="w-3.5 h-3.5 rounded-full bg-[#FFD700] shrink-0 border border-black/30"></span>
-                <span class="text-[11px] font-bold truncate">Hormozi Gold</span>
-              </button>
-
-              <button type="button" onclick="selectSubtitleTheme('mrbeast')" data-theme="mrbeast"
-                class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
-                <span class="w-3.5 h-3.5 rounded-full bg-[#33FF00] shrink-0 border border-black/30"></span>
-                <span class="text-[11px] font-bold truncate">MrBeast Lime</span>
-              </button>
-
-              <button type="button" onclick="selectSubtitleTheme('cyber')" data-theme="cyber"
-                class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
-                <span class="w-3.5 h-3.5 rounded-full bg-[#00FFFF] shrink-0 border border-black/30"></span>
-                <span class="text-[11px] font-bold truncate">Cyber Cyan</span>
-              </button>
-
-              <button type="button" onclick="selectSubtitleTheme('crimson')" data-theme="crimson"
-                class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
-                <span class="w-3.5 h-3.5 rounded-full bg-[#FF2233] shrink-0 border border-black/30"></span>
-                <span class="text-[11px] font-bold truncate">Crimson Red</span>
-              </button>
-
-              <button type="button" onclick="selectSubtitleTheme('sunset')" data-theme="sunset"
-                class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
-                <span class="w-3.5 h-3.5 rounded-full bg-[#FF7700] shrink-0 border border-black/30"></span>
-                <span class="text-[11px] font-bold truncate">Sunset Orange</span>
-              </button>
-
-              <button type="button" onclick="selectSubtitleTheme('bubblegum')" data-theme="bubblegum"
-                class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
-                <span class="w-3.5 h-3.5 rounded-full bg-[#FF1493] shrink-0 border border-black/30"></span>
-                <span class="text-[11px] font-bold truncate">Bubblegum</span>
-              </button>
-
-              <button type="button" onclick="selectSubtitleTheme('violet')" data-theme="violet"
-                class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
-                <span class="w-3.5 h-3.5 rounded-full bg-[#BF00FF] shrink-0 border border-black/30"></span>
-                <span class="text-[11px] font-bold truncate">Electric Violet</span>
-              </button>
-
-              <button type="button" onclick="selectSubtitleTheme('classic_white')" data-theme="classic_white"
-                class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
-                <span class="w-3.5 h-3.5 rounded-full bg-white shrink-0 border border-black/30"></span>
-                <span class="text-[11px] font-bold truncate">Classic White</span>
-              </button>
-            </div>
-          </div>
-
-          <!-- Position Selector -->
-          <div>
-            <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block mb-1.5">Screen Placement</span>
-            <div class="flex items-center space-x-1 bg-zinc-950 border border-zinc-800 rounded-xl p-1">
-              <button type="button" onclick="setSubtitlePosition('bottom')" id="posBtn_bottom"
-                class="pos-btn flex-1 py-1.5 text-[11px] rounded-lg font-bold bg-indigo-600 text-white cursor-pointer">
-                ⬇️ Bottom
-              </button>
-              <button type="button" onclick="setSubtitlePosition('lower_third')" id="posBtn_lower_third"
-                class="pos-btn flex-1 py-1.5 text-[11px] rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer">
-                ⏸️ Lower-3rd
-              </button>
-              <button type="button" onclick="setSubtitlePosition('center')" id="posBtn_center"
-                class="pos-btn flex-1 py-1.5 text-[11px] rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer">
-                ⏺️ Center
-              </button>
-            </div>
-          </div>
-
-          <!-- Authentic 9:16 Vertical Screen Preview Mockup -->
-          <div class="pt-1 flex justify-center">
+          <!-- Authentic 9:16 Vertical Screen Preview Mockup (Aligned to bottom) -->
+          <div class="pt-2 flex justify-center">
             <div class="relative w-full max-w-[270px] aspect-[9/13] bg-gradient-to-b from-zinc-950 via-zinc-900 to-black rounded-2xl border-2 border-zinc-800 shadow-2xl overflow-hidden flex flex-col justify-between p-3 select-none">
               <!-- Phone Header -->
               <div class="flex items-center justify-between text-[9px] text-zinc-500 font-mono border-b border-zinc-800/60 pb-1.5">
@@ -1417,7 +1518,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
               <!-- Animated Video Stage -->
               <div id="previewScreenContainer" class="flex-1 flex flex-col justify-end items-center relative py-3 transition-all">
-                <div id="karaokeLivePreview" class="text-center font-black tracking-wide text-sm transition-all select-none theme-hormozi">
+                <div id="karaokeLivePreview" class="text-center font-black tracking-wide text-sm transition-all select-none theme-hormozi" style="font-family: 'Arial Black', sans-serif;">
                   <span class="karaoke-word word-default">WAIT</span>
                   <span class="karaoke-word word-default">FOR</span>
                   <span class="karaoke-word word-active">THIS</span>
@@ -1441,7 +1542,7 @@ HTML_PAGE = """<!DOCTYPE html>
       </div>
 
       <!-- RIGHT 2/3 COLUMN (lg:col-span-8): Source Video Preview, Kernel Logs (Half-Height), Hot Moments -->
-      <div class="lg:col-span-8 space-y-6">
+      <div class="lg:col-span-8 flex flex-col space-y-6">
 
         <!-- CARD 1: Source Video Preview (Height & Width kept intact) -->
         <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-xl flex flex-col">
@@ -1489,71 +1590,75 @@ HTML_PAGE = """<!DOCTYPE html>
           </div>
         </div>
 
-        <!-- CARD 3: Detected Hot Moments (Select To Clip) -->
-        <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-xl">
-          <div class="flex items-center justify-between mb-4">
-            <div>
-              <h3 class="text-xs font-bold uppercase tracking-wider text-zinc-200 flex items-center space-x-2">
-                <i class="fa-solid fa-fire text-amber-500"></i>
-                <span>Detected Hot Moments (Select To Clip)</span>
-              </h3>
-              <p class="text-[11px] text-zinc-400 mt-0.5">Click any card to preview in player. Check the clips you want to render.</p>
-            </div>
-            <div class="flex items-center space-x-2">
-              <button onclick="selectAllTimeframes(true)" class="text-xs text-indigo-400 hover:text-indigo-300 font-medium px-2 py-1 bg-zinc-800 rounded cursor-pointer">Select All</button>
-              <button onclick="selectAllTimeframes(false)" class="text-xs text-zinc-400 hover:text-zinc-200 font-medium px-2 py-1 bg-zinc-800 rounded cursor-pointer">Clear</button>
-            </div>
-          </div>
-
-          <!-- Timeframes Container -->
-          <div id="timeframesContainer" class="space-y-3 max-h-[360px] overflow-y-auto pr-1">
-            <div class="text-xs text-zinc-500 py-8 text-center">
-              Click <b>"Scan & Detect Viral Hooks"</b> above to analyze the video and isolate hot moments.
-            </div>
-          </div>
-
-          <!-- Action Bar: Render Selected Clips & Custom Clip -->
-          <div id="renderActionSection" class="mt-4 pt-4 border-t border-zinc-800 flex flex-col sm:flex-row items-center justify-between gap-3">
-            <div class="text-xs text-zinc-300 font-medium">
-              <span id="selectedCountBadge" class="font-bold text-amber-400">0</span> moments selected
-            </div>
-            <div class="flex items-center space-x-2 w-full sm:w-auto">
-              <button id="renderSelectedBtn" onclick="renderSelectedClips()" disabled
-                class="flex-1 sm:flex-none bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-white font-bold text-xs px-5 py-2.5 rounded-xl shadow-lg shadow-orange-500/20 flex items-center justify-center space-x-2 transition-all opacity-40 cursor-not-allowed">
-                <i class="fa-solid fa-play"></i>
-                <span id="renderBtnText">Render Selected Clips</span>
-              </button>
-            </div>
-          </div>
-
-          <!-- Custom Timeframe Input Accordion -->
-          <div class="mt-4 pt-3 border-t border-zinc-800/80">
-            <details class="text-xs text-zinc-400">
-              <summary class="cursor-pointer font-semibold hover:text-zinc-200 flex items-center space-x-1.5">
-                <i class="fa-solid fa-plus text-indigo-400"></i>
-                <span>Add Custom Timeframe from Video Player</span>
-              </summary>
-              <div class="grid grid-cols-1 sm:grid-cols-4 gap-2.5 mt-3 p-3 bg-zinc-950 rounded-xl border border-zinc-800">
-                <div>
-                  <label class="block text-[10px] text-zinc-400 mb-1">Start (Seconds)</label>
-                  <input type="number" id="customStart" step="0.5" value="0.0" class="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1 text-xs text-white">
-                </div>
-                <div>
-                  <label class="block text-[10px] text-zinc-400 mb-1">End (Seconds)</label>
-                  <input type="number" id="customEnd" step="0.5" value="30.0" class="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1 text-xs text-white">
-                </div>
-                <div class="flex items-end">
-                  <button onclick="setCustomFromPlayer()" class="w-full bg-zinc-800 hover:bg-zinc-700 text-zinc-200 py-1.5 px-2 rounded-lg text-[11px] font-medium cursor-pointer" title="Set start time to current player position">
-                    Use Player Time
-                  </button>
-                </div>
-                <div class="flex items-end">
-                  <button onclick="addCustomTimeframe()" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-1.5 px-2 rounded-lg text-[11px] font-bold cursor-pointer">
-                    + Add To List
-                  </button>
-                </div>
+        <!-- CARD 3: Detected Hot Moments (Select To Clip - Height-Symmetric flex-1) -->
+        <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-xl flex-1 flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-4">
+              <div>
+                <h3 class="text-xs font-bold uppercase tracking-wider text-zinc-200 flex items-center space-x-2">
+                  <i class="fa-solid fa-fire text-amber-500"></i>
+                  <span>Detected Hot Moments (Select To Clip)</span>
+                </h3>
+                <p class="text-[11px] text-zinc-400 mt-0.5">Click any card to preview in player. Check the clips you want to render.</p>
               </div>
-            </details>
+              <div class="flex items-center space-x-2">
+                <button onclick="selectAllTimeframes(true)" class="text-xs text-indigo-400 hover:text-indigo-300 font-medium px-2 py-1 bg-zinc-800 rounded cursor-pointer">Select All</button>
+                <button onclick="selectAllTimeframes(false)" class="text-xs text-zinc-400 hover:text-zinc-200 font-medium px-2 py-1 bg-zinc-800 rounded cursor-pointer">Clear</button>
+              </div>
+            </div>
+
+            <!-- Timeframes Container -->
+            <div id="timeframesContainer" class="space-y-3 max-h-[290px] overflow-y-auto pr-1">
+              <div class="text-xs text-zinc-500 py-8 text-center">
+                Click <b>"Scan & Detect Viral Hooks"</b> above to analyze the video and isolate hot moments.
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <!-- Action Bar: Render Selected Clips & Custom Clip -->
+            <div id="renderActionSection" class="mt-4 pt-4 border-t border-zinc-800 flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div class="text-xs text-zinc-300 font-medium">
+                <span id="selectedCountBadge" class="font-bold text-amber-400">0</span> moments selected
+              </div>
+              <div class="flex items-center space-x-2 w-full sm:w-auto">
+                <button id="renderSelectedBtn" onclick="renderSelectedClips()" disabled
+                  class="flex-1 sm:flex-none bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-white font-bold text-xs px-5 py-2.5 rounded-xl shadow-lg shadow-orange-500/20 flex items-center justify-center space-x-2 transition-all opacity-40 cursor-not-allowed">
+                  <i class="fa-solid fa-play"></i>
+                  <span id="renderBtnText">Render Selected Clips</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Custom Timeframe Input Accordion -->
+            <div class="mt-4 pt-3 border-t border-zinc-800/80">
+              <details class="text-xs text-zinc-400">
+                <summary class="cursor-pointer font-semibold hover:text-zinc-200 flex items-center space-x-1.5">
+                  <i class="fa-solid fa-plus text-indigo-400"></i>
+                  <span>Add Custom Timeframe from Video Player</span>
+                </summary>
+                <div class="grid grid-cols-1 sm:grid-cols-4 gap-2.5 mt-3 p-3 bg-zinc-950 rounded-xl border border-zinc-800">
+                  <div>
+                    <label class="block text-[10px] text-zinc-400 mb-1">Start (Seconds)</label>
+                    <input type="number" id="customStart" step="0.5" value="0.0" class="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1 text-xs text-white">
+                  </div>
+                  <div>
+                    <label class="block text-[10px] text-zinc-400 mb-1">End (Seconds)</label>
+                    <input type="number" id="customEnd" step="0.5" value="30.0" class="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1 text-xs text-white">
+                  </div>
+                  <div class="flex items-end">
+                    <button onclick="setCustomFromPlayer()" class="w-full bg-zinc-800 hover:bg-zinc-700 text-zinc-200 py-1.5 px-2 rounded-lg text-[11px] font-medium cursor-pointer" title="Set start time to current player position">
+                      Use Player Time
+                    </button>
+                  </div>
+                  <div class="flex items-end">
+                    <button onclick="addCustomTimeframe()" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-1.5 px-2 rounded-lg text-[11px] font-bold cursor-pointer">
+                      + Add To List
+                    </button>
+                  </div>
+                </div>
+              </details>
+            </div>
           </div>
 
         </div>
@@ -1668,22 +1773,94 @@ HTML_PAGE = """<!DOCTYPE html>
     const PREVIEW_WORDS = ["WAIT", "FOR", "THIS", "MOMENT!"];
     let previewWordIndex = 2;
     let currentSubtitleTheme = 'hormozi';
+    let currentSubtitleFont = 'Arial Black';
+    let currentSubtitleBold = true;
+    let currentSubtitleItalic = false;
+    let currentSubtitleUppercase = true;
 
     function renderKaraokePreview() {
       const container = document.getElementById('karaokeLivePreview');
       if (!container) return;
-      container.className = `text-center font-black tracking-wide text-sm sm:text-base transition-all select-none pt-1 theme-${currentSubtitleTheme}`;
+      container.className = `text-center tracking-wide text-sm sm:text-base transition-all select-none pt-1 theme-${currentSubtitleTheme}`;
+      container.style.fontFamily = `'${currentSubtitleFont}', Impact, sans-serif`;
+      container.style.fontWeight = currentSubtitleBold ? '900' : '500';
+      container.style.fontStyle = currentSubtitleItalic ? 'italic' : 'normal';
+
+      const words = currentSubtitleUppercase 
+        ? ["WAIT", "FOR", "THIS", "MOMENT!"] 
+        : ["Wait", "for", "this", "moment!"];
+
       let html = '';
-      PREVIEW_WORDS.forEach((word, idx) => {
+      words.forEach((word, idx) => {
         const isActive = idx === previewWordIndex;
         const cls = isActive ? 'word-active' : 'word-default';
         html += `<span class="karaoke-word ${cls}">${word}</span>`;
       });
       container.innerHTML = html;
-      previewWordIndex = (previewWordIndex + 1) % PREVIEW_WORDS.length;
+      previewWordIndex = (previewWordIndex + 1) % words.length;
     }
 
     setInterval(renderKaraokePreview, 650);
+
+    function selectSubtitleFont(fontName) {
+      currentSubtitleFont = fontName;
+      const label = document.getElementById('activeFontLabel');
+      if (label) label.textContent = fontName;
+
+      document.querySelectorAll('.font-pill').forEach(btn => {
+        const f = btn.getAttribute('data-font');
+        if (f === fontName) {
+          btn.className = 'font-pill py-1.5 px-2 rounded-lg border text-[11px] font-black transition-all bg-indigo-600/20 border-indigo-500 text-white shadow-sm ring-1 ring-indigo-500/40 cursor-pointer text-center truncate';
+        } else {
+          btn.className = 'font-pill py-1.5 px-2 rounded-lg border text-[11px] font-bold transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer text-center truncate';
+        }
+      });
+
+      renderKaraokePreview();
+      sendThemeConfig();
+    }
+
+    function toggleSubtitleBold() {
+      currentSubtitleBold = !currentSubtitleBold;
+      const btn = document.getElementById('fontBoldBtn');
+      if (btn) {
+        if (currentSubtitleBold) {
+          btn.className = 'flex-1 py-1 text-xs rounded-lg font-black bg-indigo-600 text-white cursor-pointer transition-all shadow-sm';
+        } else {
+          btn.className = 'flex-1 py-1 text-xs rounded-lg font-bold bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-white cursor-pointer transition-all';
+        }
+      }
+      renderKaraokePreview();
+      sendThemeConfig();
+    }
+
+    function toggleSubtitleItalic() {
+      currentSubtitleItalic = !currentSubtitleItalic;
+      const btn = document.getElementById('fontItalicBtn');
+      if (btn) {
+        if (currentSubtitleItalic) {
+          btn.className = 'flex-1 py-1 text-xs rounded-lg font-serif italic bg-indigo-600 text-white cursor-pointer transition-all shadow-sm';
+        } else {
+          btn.className = 'flex-1 py-1 text-xs rounded-lg font-serif italic bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-white cursor-pointer transition-all';
+        }
+      }
+      renderKaraokePreview();
+      sendThemeConfig();
+    }
+
+    function toggleSubtitleCaps() {
+      currentSubtitleUppercase = !currentSubtitleUppercase;
+      const btn = document.getElementById('fontCapsBtn');
+      if (btn) {
+        if (currentSubtitleUppercase) {
+          btn.className = 'flex-1 py-1 text-[10px] rounded-lg font-bold bg-indigo-600 text-white cursor-pointer transition-all shadow-sm';
+        } else {
+          btn.className = 'flex-1 py-1 text-[10px] rounded-lg font-normal bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-white cursor-pointer transition-all';
+        }
+      }
+      renderKaraokePreview();
+      sendThemeConfig();
+    }
 
     async function pasteVideoUrl() {
       try {
@@ -1713,25 +1890,25 @@ HTML_PAGE = """<!DOCTYPE html>
       currentSubtitlePosition = pos;
       
       document.querySelectorAll('.pos-btn').forEach(btn => {
-        btn.className = 'pos-btn flex-1 py-1.5 text-xs rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer';
+        btn.className = 'pos-btn flex-1 py-1 text-[11px] rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer';
       });
       const activeBtn = document.getElementById('posBtn_' + pos);
       if (activeBtn) {
-        activeBtn.className = 'pos-btn flex-1 py-1.5 text-xs rounded-lg font-bold bg-indigo-600 text-white cursor-pointer';
+        activeBtn.className = 'pos-btn flex-1 py-1 text-[11px] rounded-lg font-bold bg-indigo-600 text-white cursor-pointer';
       }
 
       const container = document.getElementById('previewScreenContainer');
       const label = document.getElementById('previewPositionLabel');
       if (container) {
         if (pos === 'center') {
-          container.className = 'flex-1 flex flex-col justify-center items-center relative py-4 transition-all';
-          if (label) label.textContent = 'Position: Center (750 MarginV)';
+          container.className = 'flex-1 flex flex-col justify-center items-center relative py-3 transition-all';
+          if (label) label.textContent = 'Position: Center';
         } else if (pos === 'lower_third') {
-          container.className = 'flex-1 flex flex-col justify-end pb-12 items-center relative py-4 transition-all';
-          if (label) label.textContent = 'Position: Lower-Third (420 MarginV)';
+          container.className = 'flex-1 flex flex-col justify-end pb-8 items-center relative py-3 transition-all';
+          if (label) label.textContent = 'Position: Lower-Third';
         } else {
-          container.className = 'flex-1 flex flex-col justify-end items-center relative py-4 transition-all';
-          if (label) label.textContent = 'Position: Bottom (280 MarginV)';
+          container.className = 'flex-1 flex flex-col justify-end items-center relative py-3 transition-all';
+          if (label) label.textContent = 'Position: Bottom';
         }
       }
 
@@ -1759,9 +1936,9 @@ HTML_PAGE = """<!DOCTYPE html>
       document.querySelectorAll('.theme-pill').forEach(btn => {
         const t = btn.getAttribute('data-theme');
         if (t === theme) {
-          btn.className = 'theme-pill p-2.5 rounded-xl border text-left transition-all bg-indigo-600/20 border-indigo-500 text-white shadow-sm ring-1 ring-indigo-500/40 cursor-pointer flex items-center space-x-2.5';
+          btn.className = 'theme-pill p-2 rounded-xl border text-left transition-all bg-indigo-600/20 border-indigo-500 text-white shadow-sm ring-1 ring-indigo-500/40 cursor-pointer flex items-center space-x-2';
         } else {
-          btn.className = 'theme-pill p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2.5';
+          btn.className = 'theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2';
         }
       });
 
@@ -1774,7 +1951,14 @@ HTML_PAGE = """<!DOCTYPE html>
         await fetch('/api/set_theme', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({theme: currentSubtitleTheme, position: currentSubtitlePosition})
+          body: JSON.stringify({
+            theme: currentSubtitleTheme,
+            position: currentSubtitlePosition,
+            font: currentSubtitleFont,
+            bold: currentSubtitleBold,
+            italic: currentSubtitleItalic,
+            uppercase: currentSubtitleUppercase,
+          })
         });
       } catch (err) {
         console.error('Failed to sync theme config:', err);
@@ -1937,6 +2121,10 @@ HTML_PAGE = """<!DOCTYPE html>
         }
         if (data.subtitle_position && data.subtitle_position !== currentSubtitlePosition) {
           setSubtitlePosition(data.subtitle_position);
+        }
+        if (data.subtitle_font && data.subtitle_font !== currentSubtitleFont && !window.__fontInitialized) {
+          window.__fontInitialized = true;
+          selectSubtitleFont(data.subtitle_font);
         }
 
         if (data.status === 'idle') {

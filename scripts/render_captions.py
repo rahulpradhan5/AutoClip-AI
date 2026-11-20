@@ -137,13 +137,22 @@ THEME_STYLES = {
 }
 
 
-def build_ass_header(theme_name: str = "hormozi", position: str = "bottom") -> str:
+def build_ass_header(
+    theme_name: str = "hormozi",
+    position: str = "bottom",
+    font_name: str = "Arial Black",
+    is_bold: bool = True,
+    is_italic: bool = False,
+) -> str:
     cfg = THEME_STYLES.get(theme_name.lower(), THEME_STYLES["hormozi"])
     fsize = cfg["font_size"]
     primary = cfg["primary_bgr"]
     secondary = cfg["secondary_bgr"]
     outline = cfg["outline"]
     shadow = cfg["shadow"]
+
+    bold_val = -1 if is_bold else 0
+    italic_val = -1 if is_italic else 0
 
     margin_v = 280
     if position == "center":
@@ -162,7 +171,7 @@ PlayResY: 1920
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: ViralKaraoke,Arial Black,{fsize},{primary},{secondary},&H00000000,&H90000000,-1,0,0,0,100,100,2,0,1,{outline},{shadow},2,60,60,{margin_v},1
+Style: ViralKaraoke,{font_name},{fsize},{primary},{secondary},&H00000000,&H90000000,{bold_val},{italic_val},0,0,100,100,2,0,1,{outline},{shadow},2,60,60,{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -199,6 +208,10 @@ def generate_karaoke_ass(
     clip_end_sec: float | None = None,
     theme: str = "hormozi",
     position: str = "bottom",
+    font_name: str = "Arial Black",
+    is_bold: bool = True,
+    is_italic: bool = False,
+    is_uppercase: bool | None = None,
 ) -> str:
     with open(transcript_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -206,7 +219,7 @@ def generate_karaoke_ass(
     cfg = THEME_STYLES.get(theme.lower(), THEME_STYLES["hormozi"])
     highlight_tag = cfg["highlight_ass"]
     default_tag = cfg["default_ass"]
-    uppercase = cfg["uppercase"]
+    uppercase = is_uppercase if is_uppercase is not None else cfg.get("uppercase", True)
 
     raw_words = []
     for seg in data.get("segments", []):
@@ -300,13 +313,13 @@ def generate_karaoke_ass(
             event_line = f"Dialogue: 0,{start_str},{end_str},ViralKaraoke,,0,0,0,,{line_text}"
             events.append(event_line)
 
-    ass_content = build_ass_header(theme, position) + "\n".join(events) + "\n"
+    ass_content = build_ass_header(theme, position, font_name, is_bold, is_italic) + "\n".join(events) + "\n"
 
     os.makedirs(os.path.dirname(os.path.abspath(output_ass_path)), exist_ok=True)
     with open(output_ass_path, "w", encoding="utf-8") as f:
         f.write(ass_content)
 
-    print(f"[render_captions] Generated .ass subtitles with {len(events)} karaoke events (theme: {theme}) at {output_ass_path}")
+    print(f"[render_captions] Generated .ass subtitles with {len(events)} karaoke events (theme: {theme}, font: {font_name}, bold: {is_bold}, italic: {is_italic}) at {output_ass_path}")
     return output_ass_path
 
 
@@ -372,6 +385,12 @@ def main():
     parser.add_argument("--fps", type=int, default=60, help="Target export FPS (e.g., 60)")
     parser.add_argument("--theme", default="hormozi", choices=["hormozi", "mrbeast", "cyber", "crimson", "sunset", "bubblegum", "violet", "classic_white"], help="Subtitle color & font theme preset")
     parser.add_argument("--position", default="bottom", choices=["bottom", "center", "lower_third"], help="Vertical position on 9:16 screen")
+    parser.add_argument("--font", default="Arial Black", help="Font family name (e.g., Arial Black, Impact, Montserrat)")
+    parser.add_argument("--bold", action="store_true", default=True, help="Make subtitles bold")
+    parser.add_argument("--no-bold", dest="bold", action="store_false", help="Disable bold")
+    parser.add_argument("--italic", action="store_true", default=False, help="Make subtitles italic")
+    parser.add_argument("--uppercase", action="store_true", default=True, help="Force uppercase words")
+    parser.add_argument("--no-uppercase", dest="uppercase", action="store_false", help="Disable uppercase")
     parser.add_argument("--ass-output", default="./temp_work/subtitles.ass", help="Intermediary ASS path")
     args = parser.parse_args()
 
@@ -382,6 +401,10 @@ def main():
         clip_end_sec=args.end,
         theme=args.theme,
         position=args.position,
+        font_name=args.font,
+        is_bold=args.bold,
+        is_italic=args.italic,
+        is_uppercase=args.uppercase,
     )
 
     burn_captions_to_video(
