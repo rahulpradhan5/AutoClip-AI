@@ -131,6 +131,7 @@ class AppState:
             self.can_delete_source = False
             self.current_url = ""
             self.target_clips = 3
+            self.subtitle_theme = "hormozi"
             self.last_clipped_num = 0
             self.last_clipped_end_sec = 0.0
             self.download_info = {
@@ -167,6 +168,7 @@ class AppState:
                 "can_delete_source": self.can_delete_source,
                 "current_url": self.current_url,
                 "target_clips": self.target_clips,
+                "subtitle_theme": getattr(self, "subtitle_theme", "hormozi"),
                 "download_info": dict(self.download_info),
                 "last_clipped_num": max_num,
                 "last_clipped_end_sec": max_end,
@@ -603,6 +605,7 @@ def run_render_worker(selected_moments: list[dict]):
                 state.stage_message = f"Rendering Clip #{clip_id} ({idx}/{len(selected_moments)}): Burning 60 FPS Karaoke..."
 
             state.log(f"Burning 60 FPS karaoke captions with color grading & unsharp mask...")
+            theme_choice = getattr(state, "subtitle_theme", "hormozi")
             captions_cmd = [
                 PYTHON_EXE,
                 str(SCRIPTS_DIR / "render_captions.py"),
@@ -612,6 +615,7 @@ def run_render_worker(selected_moments: list[dict]):
                 "--end", str(end_t),
                 "--output", str(draft_clip_path),
                 "--ass-output", str(ass_path),
+                "--theme", theme_choice,
                 "--fps", "60",
             ]
             k_res = subprocess.run(captions_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=dict(os.environ, PYTHONIOENCODING="utf-8"))
@@ -749,6 +753,19 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(state.to_dict()).encode("utf-8"))
             return
 
+        if path == "/api/doctor":
+            try:
+                from doctor import run_diagnostics
+                doc_data = run_diagnostics()
+            except Exception as e:
+                doc_data = {"error": str(e)}
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(doc_data).encode("utf-8"))
+            return
+
         if path == "/media/source":
             source_mp4 = TEMP_DIR / "source.mp4"
             self.send_file_with_range(source_mp4, "video/mp4")
@@ -775,6 +792,23 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
         path = parsed.path
         content_len = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else ""
+
+        if path == "/api/set_theme":
+            try:
+                data = json.loads(body) if body else {}
+                theme = data.get("theme", "hormozi")
+                with state.lock:
+                    state.subtitle_theme = theme
+                state.log(f"Subtitle style preset switched to: {theme.upper()}")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "theme": theme}).encode("utf-8"))
+                return
+            except Exception as e:
+                self.send_response(HTTPStatus.BAD_REQUEST)
+                self.end_headers()
+                return
 
         # Step 1: Scan video
         if path in ["/api/scan", "/api/start"]:
@@ -1081,7 +1115,11 @@ HTML_PAGE = """<!DOCTYPE html>
         <p class="text-xs text-zinc-400">Intelligent Hook Detection • Resume Clipping • Bulk Approval • 60 FPS Ultra-HD</p>
       </div>
     </div>
-    <div class="flex items-center space-x-4">
+    <div class="flex items-center space-x-3">
+      <button onclick="openDoctorModal()" class="px-3 py-1.5 rounded-full text-xs font-semibold border border-indigo-700/60 bg-indigo-950/40 text-indigo-300 hover:bg-indigo-900/50 transition-all flex items-center space-x-1.5 cursor-pointer shadow-sm">
+        <i class="fa-solid fa-stethoscope text-indigo-400"></i>
+        <span>System Doctor</span>
+      </button>
       <div id="statusPill" class="px-3 py-1 rounded-full text-xs font-medium border border-zinc-700 bg-zinc-800 text-zinc-300 flex items-center space-x-2">
         <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
         <span id="statusText">System Ready</span>
@@ -1095,7 +1133,7 @@ HTML_PAGE = """<!DOCTYPE html>
     <!-- Top Action Banner -->
     <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-xl">
       <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
-        <div class="md:col-span-7">
+        <div class="md:col-span-5">
           <label class="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">
             <i class="fa-brands fa-youtube text-red-500 mr-1.5"></i> Video / Livestream / Reel URL
           </label>
@@ -1105,6 +1143,20 @@ HTML_PAGE = """<!DOCTYPE html>
               value="https://www.youtube.com/watch?v=BGUTv2K_SWs"
               class="w-full bg-zinc-950 border border-zinc-700 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-xl px-4 py-2.5 text-sm text-white placeholder-zinc-500 transition-all">
           </div>
+        </div>
+
+        <div class="md:col-span-2">
+          <label class="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">
+            <i class="fa-solid fa-palette text-amber-400 mr-1.5"></i> Captions Style
+          </label>
+          <select id="subtitleThemeSelect" onchange="changeSubtitleTheme(this.value)"
+            class="w-full bg-zinc-950 border border-zinc-700 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-xl px-3 py-2.5 text-xs text-white font-semibold transition-all">
+            <option value="hormozi" selected>Hormozi Gold</option>
+            <option value="mrbeast">MrBeast Lime</option>
+            <option value="cyber">Cyber Cyan</option>
+            <option value="crimson">Crimson Red</option>
+            <option value="classic_white">Classic White</option>
+          </select>
         </div>
 
         <div class="md:col-span-2">
@@ -1319,6 +1371,31 @@ HTML_PAGE = """<!DOCTYPE html>
       </div>
     </section>
 
+    <!-- System Diagnostics Doctor Modal -->
+    <div id="doctorModal" class="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+      <div class="bg-zinc-900 border border-zinc-700 rounded-2xl max-w-xl w-full p-6 shadow-2xl relative space-y-4">
+        <div class="flex items-center justify-between border-b border-zinc-800 pb-3">
+          <div class="flex items-center space-x-2.5">
+            <i class="fa-solid fa-stethoscope text-indigo-400 text-lg"></i>
+            <h3 class="text-base font-bold text-white">System Diagnostics & Environment Doctor</h3>
+          </div>
+          <button onclick="closeDoctorModal()" class="text-zinc-400 hover:text-white text-lg px-2 py-1">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+        <div id="doctorLoading" class="py-8 text-center text-zinc-400 text-sm">
+          <i class="fa-solid fa-circle-notch fa-spin text-2xl text-indigo-500 mb-2"></i>
+          <p>Running hardware & environment diagnostics...</p>
+        </div>
+        <div id="doctorContent" class="space-y-3 text-xs hidden">
+          <!-- Dynamically populated -->
+        </div>
+        <div class="border-t border-zinc-800 pt-3 flex justify-end">
+          <button onclick="closeDoctorModal()" class="bg-zinc-800 hover:bg-zinc-700 text-white px-4 py-1.5 rounded-lg text-xs font-semibold">Close</button>
+        </div>
+      </div>
+    </div>
+
   </main>
 
   <footer class="border-t border-zinc-800/80 py-4 text-center text-xs text-zinc-500">
@@ -1334,6 +1411,82 @@ HTML_PAGE = """<!DOCTYPE html>
     let currentPollingSpeed = 800;
     let loadedTimeframes = [];
     let loadedDrafts = [];
+
+    async function changeSubtitleTheme(theme) {
+      try {
+        await fetch('/api/set_theme', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({theme})
+        });
+      } catch (err) {
+        console.error('Failed to set subtitle theme:', err);
+      }
+    }
+
+    async function openDoctorModal() {
+      const modal = document.getElementById('doctorModal');
+      const loading = document.getElementById('doctorLoading');
+      const content = document.getElementById('doctorContent');
+      modal.classList.remove('hidden');
+      loading.classList.remove('hidden');
+      content.classList.add('hidden');
+
+      try {
+        const res = await fetch('/api/doctor');
+        const data = await res.json();
+        loading.classList.add('hidden');
+        content.classList.remove('hidden');
+
+        content.innerHTML = `
+          <div class="p-3.5 rounded-xl bg-zinc-950 border border-zinc-800 space-y-2">
+            <div class="flex justify-between items-center">
+              <span class="text-zinc-400">Python Environment:</span>
+              <span class="font-bold ${data.python_ok ? 'text-emerald-400' : 'text-red-400'}">${data.python_version || 'Unknown'} ${data.python_ok ? '✓' : '✗'}</span>
+            </div>
+            <div class="flex justify-between items-center">
+              <span class="text-zinc-400">Operating System:</span>
+              <span class="text-zinc-200 font-semibold">${data.os || 'Windows'}</span>
+            </div>
+            <div class="flex justify-between items-center">
+              <span class="text-zinc-400">FFmpeg Subsystem:</span>
+              <span class="font-bold ${data.ffmpeg_ok ? 'text-emerald-400' : 'text-red-400'}">${data.ffmpeg_ok ? 'Installed (libass Active) ✓' : 'Missing ✗'}</span>
+            </div>
+            <div class="flex justify-between items-center">
+              <span class="text-zinc-400">Encoders & Acceleration:</span>
+              <span class="text-amber-300 font-semibold">${(data.hw_accel && data.hw_accel.length > 0) ? data.hw_accel.join(', ') : 'Software CPU libx264'}</span>
+            </div>
+          </div>
+
+          <div class="p-3.5 rounded-xl bg-zinc-950 border border-zinc-800 space-y-2">
+            <div class="flex justify-between items-center">
+              <span class="text-zinc-400">MediaPipe 9:16 Face Tracker:</span>
+              <span class="font-bold ${data.mediapipe_ok ? 'text-emerald-400' : 'text-red-400'}">${data.mediapipe_ok ? 'Ready ✓' : 'Missing ✗'}</span>
+            </div>
+            <div class="flex justify-between items-center">
+              <span class="text-zinc-400">Whisper AI / CTranslate2:</span>
+              <span class="font-bold ${data.whisper_ok ? 'text-emerald-400' : 'text-red-400'}">${data.whisper_ok ? (data.cuda_gpus > 0 ? `CUDA Active (${data.cuda_gpus} GPU) ⚡` : 'CPU Int8 Mode ✓') : 'Missing ✗'}</span>
+            </div>
+            <div class="flex justify-between items-center">
+              <span class="text-zinc-400">Local Ollama LLM:</span>
+              <span class="font-semibold ${data.ollama_online ? 'text-emerald-400' : 'text-zinc-400'}">${data.ollama_online ? 'Online (LLM Scoring Active) 🧠' : 'Offline (Fast NLP Engine Active)'}</span>
+            </div>
+            <div class="flex justify-between items-center">
+              <span class="text-zinc-400">Disk Space Free:</span>
+              <span class="text-zinc-200 font-semibold">${data.free_disk_gb ? data.free_disk_gb + ' GB' : 'Adequate'}</span>
+            </div>
+          </div>
+        `;
+      } catch (e) {
+        loading.classList.add('hidden');
+        content.classList.remove('hidden');
+        content.innerHTML = `<div class="p-4 bg-red-950/40 border border-red-800 text-red-200 rounded-xl">Diagnostics error: ${e.message}</div>`;
+      }
+    }
+
+    function closeDoctorModal() {
+      document.getElementById('doctorModal').classList.add('hidden');
+    }
 
     async function scanVideo() {
       const url = document.getElementById('videoUrlInput').value.trim();
@@ -1421,6 +1574,13 @@ HTML_PAGE = """<!DOCTYPE html>
 
         const statusText = document.getElementById('statusText');
         const scanBtn = document.getElementById('scanBtn');
+
+        if (data.subtitle_theme) {
+          const themeSel = document.getElementById('subtitleThemeSelect');
+          if (themeSel && themeSel.value !== data.subtitle_theme && !themeSel.matches(':focus')) {
+            themeSel.value = data.subtitle_theme;
+          }
+        }
 
         if (data.status === 'idle') {
           statusText.textContent = 'System Ready';

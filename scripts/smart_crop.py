@@ -71,12 +71,36 @@ def render_blurred_pillarbox(frame: np.ndarray, target_w: int = 1080, target_h: 
     return blurred_bg
 
 
-def is_scene_cut(prev_gray: np.ndarray | None, curr_gray: np.ndarray, threshold: float = 35.0) -> bool:
-    """Detects hard scene cuts by computing mean absolute pixel difference."""
-    if prev_gray is None:
+def is_scene_cut(
+    prev_hsv: np.ndarray | None,
+    curr_hsv: np.ndarray,
+    prev_gray: np.ndarray | None,
+    curr_gray: np.ndarray,
+    corr_threshold: float = 0.65,
+    diff_threshold: float = 32.0,
+) -> bool:
+    """
+    Advanced dual-metric scene cut detector:
+    1. Color HSV histogram correlation (detects angle, background, and palette changes).
+    2. Mean absolute pixel intensity delta (detects lighting and object displacement).
+    """
+    if prev_hsv is None or prev_gray is None:
         return False
-    diff = cv2.absdiff(prev_gray, curr_gray)
-    return float(np.mean(diff)) > threshold
+
+    # 1. Histogram correlation across Hue and Saturation
+    hist_prev = cv2.calcHist([prev_hsv], [0, 1], None, [16, 16], [0, 180, 0, 256])
+    cv2.normalize(hist_prev, hist_prev, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+
+    hist_curr = cv2.calcHist([curr_hsv], [0, 1], None, [16, 16], [0, 180, 0, 256])
+    cv2.normalize(hist_curr, hist_curr, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+
+    corr = cv2.compareHist(hist_prev, hist_curr, cv2.HISTCMP_CORREL)
+
+    # 2. Pixel difference
+    diff = float(np.mean(cv2.absdiff(prev_gray, curr_gray)))
+
+    # Scene cut occurs if correlation dropped significantly or high diff with low correlation
+    return bool(corr < corr_threshold or (diff > diff_threshold and corr < 0.78))
 
 
 def smart_crop_video(
@@ -139,6 +163,7 @@ def smart_crop_video(
     required_face_frames = int(0.4 * fps)  # Require 0.4s of confident detection to return from pillarbox
 
     prev_gray = None
+    prev_hsv = None
 
     ffmpeg_cmd = [
         FFMPEG_PATH,
@@ -176,10 +201,13 @@ def smart_crop_video(
                 break
 
             curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            # Downsampled cut detection for speed
+            curr_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            # Downsampled cut detection for high speed & accuracy
             curr_small_gray = cv2.resize(curr_gray, (160, 90), interpolation=cv2.INTER_AREA)
-            cut_detected = is_scene_cut(prev_gray, curr_small_gray)
+            curr_small_hsv = cv2.resize(curr_hsv, (160, 90), interpolation=cv2.INTER_AREA)
+            cut_detected = is_scene_cut(prev_hsv, curr_small_hsv, prev_gray, curr_small_gray)
             prev_gray = curr_small_gray
+            prev_hsv = curr_small_hsv
 
             detected_face_x = None
 
@@ -201,9 +229,16 @@ def smart_crop_video(
                             valid_faces.append((cx, fw * fh))
 
                     if valid_faces:
-                        # If multiple faces, prefer the one closest to current camera center (continuity)
-                        closest = min(valid_faces, key=lambda f: abs(f[0] - current_center_x))
-                        detected_face_x = closest[0]
+                        if cut_detected:
+                            # Scene cut: old camera position is obsolete!
+                            # Snap directly to the most prominent/largest face in the new shot
+                            primary_face = max(valid_faces, key=lambda f: f[1])
+                            detected_face_x = primary_face[0]
+                        else:
+                            # Continuity: stay locked on speaker closest to current camera center
+                            closest = min(valid_faces, key=lambda f: abs(f[0] - current_center_x))
+                            detected_face_x = closest[0]
+
                         consecutive_face_frames += 1
                         no_face_frames = 0
                     else:

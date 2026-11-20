@@ -45,12 +45,70 @@ def format_ass_time(seconds: float) -> str:
     return f"{hrs:d}:{mins:02d}:{secs:02d}.{cs:02d}"
 
 
-def build_ass_header() -> str:
-    # ASS Colors: &HAABBGGRR
-    # Primary: White (&H00FFFFFF), Highlight: #FFD700 -> B=00, G=D7, R=FF (&H0000D7FF)
-    # Outline: Black (&H00000000), Shadow: Black (&H80000000)
-    return """[Script Info]
-Title: Universal Clipper Karaoke Subtitles
+THEME_STYLES = {
+    "hormozi": {
+        "highlight_ass": r"{\c&H00D7FF&}",  # #FFD700 Gold / Yellow
+        "default_ass": r"{\c&HFFFFFF&}",    # Pure White
+        "primary_bgr": "&H00FFFFFF",
+        "secondary_bgr": "&H0000D7FF",
+        "font_size": 78,
+        "outline": 6,
+        "shadow": 3,
+        "uppercase": True,
+    },
+    "mrbeast": {
+        "highlight_ass": r"{\c&H00FF33&}",  # #33FF00 Electric Lime Green
+        "default_ass": r"{\c&HFFFFFF&}",    # Pure White
+        "primary_bgr": "&H00FFFFFF",
+        "secondary_bgr": "&H0033FF00",
+        "font_size": 80,
+        "outline": 6,
+        "shadow": 4,
+        "uppercase": True,
+    },
+    "cyber": {
+        "highlight_ass": r"{\c&HFFFF00&}",  # #00FFFF Neon Cyan
+        "default_ass": r"{\c&HFFFFFF&}",    # Pure White
+        "primary_bgr": "&H00FFFFFF",
+        "secondary_bgr": "&H00FFFF00",
+        "font_size": 76,
+        "outline": 6,
+        "shadow": 3,
+        "uppercase": True,
+    },
+    "crimson": {
+        "highlight_ass": r"{\c&H0000FF&}",  # #FF0000 Crimson Red
+        "default_ass": r"{\c&HFFFFFF&}",    # Pure White
+        "primary_bgr": "&H00FFFFFF",
+        "secondary_bgr": "&H000000FF",
+        "font_size": 78,
+        "outline": 6,
+        "shadow": 3,
+        "uppercase": True,
+    },
+    "classic_white": {
+        "highlight_ass": r"{\c&HFFFFFF&}",  # Pure White
+        "default_ass": r"{\c&HE0E0E0&}",    # Soft Platinum
+        "primary_bgr": "&H00FFFFFF",
+        "secondary_bgr": "&H00E0E0E0",
+        "font_size": 72,
+        "outline": 4,
+        "shadow": 2,
+        "uppercase": False,
+    },
+}
+
+
+def build_ass_header(theme_name: str = "hormozi") -> str:
+    cfg = THEME_STYLES.get(theme_name.lower(), THEME_STYLES["hormozi"])
+    fsize = cfg["font_size"]
+    primary = cfg["primary_bgr"]
+    secondary = cfg["secondary_bgr"]
+    outline = cfg["outline"]
+    shadow = cfg["shadow"]
+
+    return f"""[Script Info]
+Title: AutoClip-AI Subtitles ({theme_name})
 ScriptType: v4.00+
 WrapStyle: 0
 ScaledBorderAndShadow: yes
@@ -60,7 +118,7 @@ PlayResY: 1920
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: ViralKaraoke,Arial Black,78,&H00FFFFFF,&H0000D7FF,&H00000000,&H90000000,-1,0,0,0,100,100,2,0,1,6,3,2,60,60,280,1
+Style: ViralKaraoke,Arial Black,{fsize},{primary},{secondary},&H00000000,&H90000000,-1,0,0,0,100,100,2,0,1,{outline},{shadow},2,60,60,280,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -95,9 +153,15 @@ def generate_karaoke_ass(
     output_ass_path: str,
     clip_start_sec: float = 0.0,
     clip_end_sec: float | None = None,
+    theme: str = "hormozi",
 ) -> str:
     with open(transcript_path, "r", encoding="utf-8") as f:
         data = json.load(f)
+
+    cfg = THEME_STYLES.get(theme.lower(), THEME_STYLES["hormozi"])
+    highlight_tag = cfg["highlight_ass"]
+    default_tag = cfg["default_ass"]
+    uppercase = cfg["uppercase"]
 
     raw_words = []
     for seg in data.get("segments", []):
@@ -138,7 +202,9 @@ def generate_karaoke_ass(
         rel_start = max(0.0, w_start - clip_start_sec)
         rel_end = (w_end - clip_start_sec) if clip_end_sec is None else min(clip_end_sec - clip_start_sec, w_end - clip_start_sec)
 
-        clean_token = re.sub(r"[^\w\s\'\?!,\.-]", "", w_text).strip().upper()
+        clean_token = re.sub(r"[^\w\s\'\?!,\.-]", "", w_text).strip()
+        if uppercase:
+            clean_token = clean_token.upper()
         if not clean_token:
             continue
 
@@ -154,9 +220,6 @@ def generate_karaoke_ass(
     phrases = chunk_words_into_phrases(filtered_words, min_words=2, max_words=4)
 
     events = []
-    # Yellow highlight in ASS tag: \c&H00D7FF&, default white: \c&HFFFFFF&
-    yellow_tag = r"{\c&H00D7FF&}"
-    white_tag = r"{\c&HFFFFFF&}"
 
     for phrase in phrases:
         p_start = phrase[0]["start"]
@@ -174,16 +237,16 @@ def generate_karaoke_ass(
             else:
                 w_end = max(w_end, p_end)
 
-            # Build line text with active word highlighted in #FFD700
+            # Build line text with active word highlighted
             line_parts = []
             for idx, w in enumerate(phrase):
                 clean_word = re.sub(r"[^\w\s\'\?!,\.-]", "", w["word"]).strip()
                 if not clean_word:
                     continue
                 if idx == active_idx:
-                    line_parts.append(f"{yellow_tag}{clean_word}{white_tag}")
+                    line_parts.append(f"{highlight_tag}{clean_word}{default_tag}")
                 else:
-                    line_parts.append(f"{white_tag}{clean_word}")
+                    line_parts.append(f"{default_tag}{clean_word}")
 
             line_text = " ".join(line_parts)
             start_str = format_ass_time(w_start)
@@ -192,13 +255,13 @@ def generate_karaoke_ass(
             event_line = f"Dialogue: 0,{start_str},{end_str},ViralKaraoke,,0,0,0,,{line_text}"
             events.append(event_line)
 
-    ass_content = build_ass_header() + "\n".join(events) + "\n"
+    ass_content = build_ass_header(theme) + "\n".join(events) + "\n"
 
     os.makedirs(os.path.dirname(os.path.abspath(output_ass_path)), exist_ok=True)
     with open(output_ass_path, "w", encoding="utf-8") as f:
         f.write(ass_content)
 
-    print(f"[render_captions] Generated .ass subtitles with {len(events)} karaoke events at {output_ass_path}")
+    print(f"[render_captions] Generated .ass subtitles with {len(events)} karaoke events (theme: {theme}) at {output_ass_path}")
     return output_ass_path
 
 
@@ -262,6 +325,7 @@ def main():
     parser.add_argument("--start", type=float, default=0.0, help="Clip start timestamp relative to source")
     parser.add_argument("--end", type=float, default=None, help="Clip end timestamp relative to source")
     parser.add_argument("--fps", type=int, default=60, help="Target export FPS (e.g., 60)")
+    parser.add_argument("--theme", default="hormozi", choices=["hormozi", "mrbeast", "cyber", "crimson", "classic_white"], help="Subtitle color & font theme preset")
     parser.add_argument("--ass-output", default="./temp_work/subtitles.ass", help="Intermediary ASS path")
     args = parser.parse_args()
 
@@ -270,6 +334,7 @@ def main():
         output_ass_path=args.ass_output,
         clip_start_sec=args.start,
         clip_end_sec=args.end,
+        theme=args.theme,
     )
 
     burn_captions_to_video(

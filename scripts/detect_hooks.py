@@ -141,6 +141,60 @@ def calculate_intensity_score(text: str, duration: float, words: list) -> tuple[
     return round(normalized_score, 1), label
 
 
+def check_ollama_available(host: str = "http://localhost:11434") -> tuple[bool, str]:
+    """Checks if Ollama is running locally and returns (is_available, model_name)."""
+    import urllib.request
+    try:
+        req = urllib.request.Request(f"{host}/api/tags", headers={"User-Agent": "AutoClip-AI"})
+        with urllib.request.urlopen(req, timeout=1.0) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                models = data.get("models", [])
+                if models:
+                    preferred = ["llama3", "mistral", "qwen", "gemma", "phi3"]
+                    for p in preferred:
+                        for m in models:
+                            if p in m.get("name", "").lower():
+                                return True, m["name"]
+                    return True, models[0].get("name", "llama3")
+                return True, "llama3"
+    except Exception:
+        pass
+    return False, ""
+
+
+def score_candidate_with_ollama(text: str, model_name: str, host: str = "http://localhost:11434") -> dict | None:
+    """Uses local Ollama LLM to assess virality and hook tension."""
+    import urllib.request
+    prompt = (
+        "You are an expert viral video editor. Analyze this short transcript segment for a YouTube Short / TikTok.\n"
+        f"Transcript: \"{text[:600]}\"\n\n"
+        "Respond ONLY with a JSON object in this exact format:\n"
+        "{\"virality_score\": 85, \"hook_type\": \"Curiosity Gap\", \"viral_title\": \"Wait For It... 🤯\"}"
+    )
+    payload = json.dumps({
+        "model": model_name,
+        "prompt": prompt,
+        "stream": False,
+        "format": "json"
+    }).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(
+            f"{host}/api/generate",
+            data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": "AutoClip-AI"}
+        )
+        with urllib.request.urlopen(req, timeout=8.0) as resp:
+            if resp.status == 200:
+                res_data = json.loads(resp.read().decode("utf-8"))
+                response_str = res_data.get("response", "{}")
+                return json.loads(response_str)
+    except Exception:
+        pass
+    return None
+
+
 def find_viral_segments(
     transcript_path: str,
     min_duration: float = 25.0,
@@ -148,6 +202,7 @@ def find_viral_segments(
     top_k: int = 15,
     start_after_sec: float = 0.0,
     start_index: int = 1,
+    use_ollama: bool = True,
 ) -> list[dict]:
     with open(transcript_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -226,6 +281,16 @@ def find_viral_segments(
             if len(selected) >= top_k:
                 break
 
+    # Check optional Ollama LLM scoring
+    ollama_online = False
+    ollama_model = ""
+    if use_ollama:
+        ollama_online, ollama_model = check_ollama_available()
+        if ollama_online:
+            print(f"[detect_hooks] Local Ollama detected! Enhancing top hooks with model: {ollama_model}")
+        else:
+            print("[detect_hooks] Ollama not active. Using built-in high-speed NLP heuristic engine.")
+
     # Attach dynamic titles and niche hashtags
     for offset, c in enumerate(selected):
         c_idx = start_index + offset
@@ -233,6 +298,17 @@ def find_viral_segments(
         title, hashtags = generate_clip_metadata(c["text"], c["hook"], c_idx)
         c["title"] = title
         c["hashtags"] = hashtags
+
+        if ollama_online and offset < 5:
+            llm_res = score_candidate_with_ollama(c["text"], ollama_model)
+            if llm_res and isinstance(llm_res, dict):
+                llm_score = llm_res.get("virality_score")
+                if llm_score:
+                    c["score"] = round((c["score"] + float(llm_score)) / 2.0, 1)
+                if llm_res.get("viral_title"):
+                    c["title"] = f"{llm_res['viral_title'].strip()} 🔥"
+                if llm_res.get("hook_type"):
+                    c["intensity"] = f"{llm_res['hook_type'].strip()} ⚡"
 
     return selected
 
@@ -246,6 +322,7 @@ def main():
     parser.add_argument("--start-after", type=float, default=0.0, help="Skip segments before this timestamp (resume)")
     parser.add_argument("--start-index", type=int, default=1, help="Starting index for clip numbering")
     parser.add_argument("--output", default="./temp_work/viral_hooks.json", help="Path to save candidate hooks")
+    parser.add_argument("--no-ollama", action="store_true", help="Disable local Ollama LLM hook scoring")
     args = parser.parse_args()
 
     candidates = find_viral_segments(
@@ -255,6 +332,7 @@ def main():
         top_k=args.top_k,
         start_after_sec=args.start_after,
         start_index=args.start_index,
+        use_ollama=not args.no_ollama,
     )
     output_payload = {
         "total": len(candidates),

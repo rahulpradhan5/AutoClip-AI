@@ -6,11 +6,12 @@ Autonomous, 100% private, local video clipper that converts long videos, podcast
 
 ## Key Features
 
-- **MediaPipe AI Face Tracking**: Dynamically tracks speakers and centers active subjects from 16:9 widescreen to 9:16 vertical using smooth Kalman-filtered framing.
-- **Whisper AI Karaoke Subtitles**: Generates precise word-by-word synchronized animated subtitles.
-- **Intelligent Hook Detector**: Analyzes speech transcripts for emotional peaks, curiosity gaps, and cliffhangers to extract viral 25–55 second segments.
+- **MediaPipe AI Face Tracking & Scene-Cut Snapping**: Dynamically tracks speakers and centers active subjects from 16:9 widescreen to 9:16 vertical using smooth Kalman-filtered framing, with instant angle snapping on shot cuts.
+- **Whisper AI Animated Karaoke Subtitles**: Word-by-word synchronized subtitles with customizable visual themes (Hormozi Gold, MrBeast Lime, Cyber Cyan, Crimson Red, and Classic White).
+- **Intelligent Hook Detector (with Optional Ollama LLM)**: Analyzes speech transcripts for emotional peaks, curiosity gaps, and cliffhangers. Seamlessly plugs into local Ollama (Llama 3 / Mistral) when running, with instant fallback to built-in high-speed NLP heuristics.
 - **Viral Metadata Generator**: Automatically creates high-CTR titles and 5 niche-targeted hashtags (`#Shorts`, `#Gaming`, etc.).
 - **Interactive Web Studio UI**: Built-in dashboard (`http://localhost:8888`) with range scrubbing, real-time clipping progress, draft video previews, and one-click approvals.
+- **Built-in System Diagnostics (Doctor)**: One-click diagnostic utility (`doctor.bat`) to verify GPU acceleration (NVIDIA CUDA / Intel QSV / Apple VideoToolbox), FFmpeg libass support, and AI dependencies.
 - **100% Local & Free**: Runs entirely on your own GPU/CPU without external API fees or cloud subscriptions.
 
 ---
@@ -133,11 +134,13 @@ AutoClip-AI/
 ├── app.py                     # Web Studio server & interactive UI
 ├── run.bat                    # One-click Windows launcher (starts app + browser)
 ├── launch_ui.bat              # Alternate one-click Windows launcher
+├── doctor.bat                 # One-click system diagnostics & environment check
 ├── requirements.txt           # Python library dependencies
 ├── scripts/
-│   ├── detect_hooks.py        # Hook tension & curiosity gap detection
-│   ├── smart_crop.py          # MediaPipe face tracking & 9:16 vertical crop
-│   ├── render_captions.py     # Karaoke caption burning & 60 FPS video render
+│   ├── doctor.py              # Diagnostics engine (GPU, FFmpeg, Ollama, Disk)
+│   ├── detect_hooks.py        # Hook tension & curiosity gap detection (NLP + Ollama)
+│   ├── smart_crop.py          # MediaPipe face tracking & scene-cut 9:16 crop
+│   ├── render_captions.py     # Karaoke caption burning (5 themes) & 60 FPS render
 │   ├── generate_metadata.py   # AI title & 5 niche hashtag generator
 │   ├── transcribe.py          # Whisper AI audio transcription
 │   ├── ingest.py              # Video ingestion & stream downloader
