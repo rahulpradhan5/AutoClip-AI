@@ -1230,267 +1230,231 @@ HTML_PAGE = """<!DOCTYPE html>
   </header>
 
   <!-- Main Container -->
-  <main class="flex-1 max-w-[1700px] w-full mx-auto p-6 space-y-6">
+  <main class="flex-1 max-w-[1700px] w-full mx-auto p-4 sm:p-6 space-y-6">
 
-    <!-- SECTION 1: Video Ingestion & Pipeline Launcher (Clean, Full-Width) -->
-    <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-4">
-      <div>
-        <div class="flex items-center justify-between mb-2">
-          <label class="text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center space-x-2">
-            <i class="fa-brands fa-youtube text-red-500 text-sm"></i>
-            <span>Video / Livestream / Reel Source Link</span>
-          </label>
-          <div class="flex items-center space-x-3 text-xs">
-            <span class="text-zinc-500 text-[11px] hidden sm:inline"><i class="fa-solid fa-bolt text-amber-400 mr-1"></i>Supports YouTube, Podcasts & Local Files</span>
-            <button type="button" onclick="pasteVideoUrl()" class="text-indigo-400 hover:text-indigo-300 font-medium flex items-center space-x-1 cursor-pointer">
-              <i class="fa-regular fa-paste"></i>
-              <span>Paste from Clipboard</span>
+    <!-- TOP SECTION: Left 1/3 (Ingestion & Captions Studio) vs Right 2/3 (Source Player, Kernel Logs, Hot Moments) -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+
+      <!-- LEFT 1/3 COLUMN (lg:col-span-4): Video Ingestion & Captions Style Studio -->
+      <div class="lg:col-span-4 space-y-6">
+
+        <!-- CARD 1: Video Ingestion & Pipeline Launcher -->
+        <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-4">
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <label class="text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center space-x-2">
+                <i class="fa-brands fa-youtube text-red-500 text-sm"></i>
+                <span>Source Video / Link</span>
+              </label>
+              <button type="button" onclick="pasteVideoUrl()" class="text-indigo-400 hover:text-indigo-300 font-medium text-xs flex items-center space-x-1 cursor-pointer">
+                <i class="fa-regular fa-paste"></i>
+                <span>Paste</span>
+              </button>
+            </div>
+            <div class="relative">
+              <input type="text" id="videoUrlInput" 
+                placeholder="YouTube URL or local file path..." 
+                value="https://www.youtube.com/watch?v=BGUTv2K_SWs"
+                class="w-full bg-zinc-950 border border-zinc-700/80 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-zinc-500 transition-all font-mono">
+            </div>
+            <p class="text-[11px] text-zinc-500 mt-1.5 flex items-center">
+              <i class="fa-solid fa-bolt text-amber-400 mr-1 text-[10px]"></i>YouTube, Podcasts, Streams & Local Files
+            </p>
+          </div>
+
+          <!-- Controls: Clips Picker & Resume -->
+          <div class="space-y-3 pt-1 border-t border-zinc-800/80">
+            <div>
+              <span class="text-[11px] font-bold text-zinc-400 uppercase tracking-wider block mb-1.5">Target Clips Count</span>
+              <div class="flex items-center space-x-1.5 bg-zinc-950 border border-zinc-800 rounded-xl p-1">
+                <button type="button" onclick="setClipCount(3)" class="clip-count-btn flex-1 py-1.5 text-xs rounded-lg font-bold bg-indigo-600 text-white cursor-pointer" data-val="3">3</button>
+                <button type="button" onclick="setClipCount(5)" class="clip-count-btn flex-1 py-1.5 text-xs rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer" data-val="5">5</button>
+                <button type="button" onclick="setClipCount(8)" class="clip-count-btn flex-1 py-1.5 text-xs rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer" data-val="8">8</button>
+                <button type="button" onclick="setClipCount(12)" class="clip-count-btn flex-1 py-1.5 text-xs rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer" data-val="12">12</button>
+                <div class="flex items-center px-1 border-l border-zinc-800">
+                  <input type="number" id="numClipsInput" value="3" min="1" max="25" class="w-9 bg-transparent text-center text-xs text-white font-bold focus:outline-none" title="Custom count">
+                </div>
+              </div>
+            </div>
+
+            <!-- Resume Checkbox -->
+            <label class="flex items-center space-x-2 text-xs text-zinc-300 cursor-pointer bg-zinc-950/80 p-2.5 rounded-xl border border-zinc-800/80 hover:border-zinc-700 transition-colors">
+              <input type="checkbox" id="resumeCheckbox" class="w-4 h-4 rounded text-amber-500 focus:ring-amber-400 bg-zinc-900 border-zinc-700">
+              <span class="text-[11px]">Resume from last clip (<b id="resumeTimeLabel" class="text-amber-400 font-mono">00:00</b>)</span>
+            </label>
+
+            <!-- Scan Button -->
+            <button id="scanBtn" onclick="scanVideo()" 
+              class="w-full bg-gradient-to-r from-indigo-600 via-indigo-500 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold text-xs py-3 rounded-xl shadow-lg shadow-indigo-600/30 flex items-center justify-center space-x-2 transition-all active:scale-[0.98] cursor-pointer">
+              <i class="fa-solid fa-radar text-indigo-200"></i>
+              <span>Scan & Detect Viral Hooks</span>
             </button>
           </div>
-        </div>
-        <div class="relative">
-          <input type="text" id="videoUrlInput" 
-            placeholder="Paste YouTube video or livestream URL (e.g., https://www.youtube.com/watch?v=...)" 
-            value="https://www.youtube.com/watch?v=BGUTv2K_SWs"
-            class="w-full bg-zinc-950 border border-zinc-700/80 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 rounded-xl px-4 py-3 text-sm text-white placeholder-zinc-500 transition-all font-mono">
-        </div>
-      </div>
 
-      <!-- Action Controls Bar -->
-      <div class="flex flex-wrap items-center justify-between gap-4 pt-1">
-        <!-- Target Clips Picker -->
-        <div class="flex items-center space-x-3">
-          <span class="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Clips to Extract:</span>
-          <div class="flex items-center space-x-1.5 bg-zinc-950 border border-zinc-800 rounded-xl p-1">
-            <button type="button" onclick="setClipCount(3)" class="clip-count-btn px-3 py-1.5 text-xs rounded-lg font-bold bg-indigo-600 text-white cursor-pointer" data-val="3">3 Clips</button>
-            <button type="button" onclick="setClipCount(5)" class="clip-count-btn px-3 py-1.5 text-xs rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer" data-val="5">5</button>
-            <button type="button" onclick="setClipCount(8)" class="clip-count-btn px-3 py-1.5 text-xs rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer" data-val="8">8</button>
-            <button type="button" onclick="setClipCount(12)" class="clip-count-btn px-3 py-1.5 text-xs rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer" data-val="12">12</button>
-            <div class="flex items-center pl-1 border-l border-zinc-800">
-              <input type="number" id="numClipsInput" value="3" min="1" max="25" class="w-12 bg-transparent text-center text-xs text-white font-bold focus:outline-none" title="Custom count">
+          <!-- Live Progress Bar -->
+          <div id="progressSection" class="pt-3 border-t border-zinc-800/80 hidden">
+            <div class="flex justify-between items-center text-xs mb-1.5">
+              <span id="stageMsg" class="text-zinc-300 font-medium text-[11px] truncate">Initializing pipeline...</span>
+              <span id="progressPct" class="text-indigo-400 font-bold ml-2">0%</span>
+            </div>
+            <div class="w-full bg-zinc-800 rounded-full h-2 overflow-hidden">
+              <div id="progressBar" class="bg-gradient-to-r from-indigo-500 to-violet-500 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
             </div>
           </div>
         </div>
 
-        <!-- Resume Checkbox -->
-        <label class="flex items-center space-x-2 text-xs text-zinc-300 cursor-pointer bg-zinc-950/80 px-3 py-2 rounded-xl border border-zinc-800/80 hover:border-zinc-700 transition-colors">
-          <input type="checkbox" id="resumeCheckbox" class="w-4 h-4 rounded text-amber-500 focus:ring-amber-400 bg-zinc-900 border-zinc-700">
-          <span>Resume from last clip (<b id="resumeTimeLabel" class="text-amber-400 font-mono">00:00</b>)</span>
-        </label>
-
-        <!-- Primary Scan Button -->
-        <button id="scanBtn" onclick="scanVideo()" 
-          class="bg-gradient-to-r from-indigo-600 via-indigo-500 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold text-sm px-6 py-2.5 rounded-xl shadow-lg shadow-indigo-600/30 flex items-center space-x-2 transition-all active:scale-[0.98] cursor-pointer">
-          <i class="fa-solid fa-radar text-indigo-200"></i>
-          <span>Scan & Detect Viral Hooks</span>
-        </button>
-      </div>
-
-      <!-- Live Progress Bar -->
-      <div id="progressSection" class="pt-3 border-t border-zinc-800/80 hidden">
-        <div class="flex justify-between items-center text-xs mb-1.5">
-          <span id="stageMsg" class="text-zinc-300 font-medium">Initializing pipeline...</span>
-          <span id="progressPct" class="text-indigo-400 font-bold">0%</span>
-        </div>
-        <div class="w-full bg-zinc-800 rounded-full h-2.5 overflow-hidden">
-          <div id="progressBar" class="bg-gradient-to-r from-indigo-500 to-violet-500 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- SECTION 2: Captions Studio (Live Aesthetic Designer) -->
-    <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-xl">
-      <div class="flex flex-wrap items-center justify-between gap-2 mb-4 border-b border-zinc-800/80 pb-3">
-        <div class="flex items-center space-x-2.5">
-          <div class="w-7 h-7 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
-            <i class="fa-solid fa-closed-captioning text-amber-400 text-sm"></i>
+        <!-- CARD 2: Captions Style Studio & Live 9:16 Mockup -->
+        <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-4">
+          <div class="flex items-center justify-between border-b border-zinc-800/80 pb-3">
+            <div class="flex items-center space-x-2">
+              <div class="w-7 h-7 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
+                <i class="fa-solid fa-closed-captioning text-amber-400 text-xs"></i>
+              </div>
+              <div>
+                <h3 class="text-xs font-bold text-zinc-100 uppercase tracking-wider">Captions Studio</h3>
+                <p class="text-[10px] text-zinc-400">8 Themes • 60 FPS Burned</p>
+              </div>
+            </div>
+            <span id="activeStyleBadge" class="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 truncate max-w-[130px]">Hormozi Gold</span>
           </div>
-          <div>
-            <h3 class="text-sm font-bold text-zinc-100 uppercase tracking-wider">Viral Subtitle Studio & Live 9:16 Preview</h3>
-            <p class="text-xs text-zinc-400">Select an animated aesthetic and screen position. Subtitles are burned at 60 FPS.</p>
-          </div>
-        </div>
-        <div class="flex items-center space-x-3">
-          <span id="activeStyleBadge" class="text-xs font-mono font-bold px-3 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">Hormozi Gold (#FFD700)</span>
-        </div>
-      </div>
 
-      <!-- Hidden select for compatibility -->
-      <select id="subtitleThemeSelect" class="hidden">
-        <option value="hormozi" selected>Hormozi Gold</option>
-        <option value="mrbeast">MrBeast Lime</option>
-        <option value="cyber">Cyber Cyan</option>
-        <option value="crimson">Crimson Red</option>
-        <option value="sunset">Sunset Orange</option>
-        <option value="bubblegum">Bubblegum Pink</option>
-        <option value="violet">Electric Purple</option>
-        <option value="classic_white">Classic White</option>
-      </select>
+          <!-- Hidden select for compatibility -->
+          <select id="subtitleThemeSelect" class="hidden">
+            <option value="hormozi" selected>Hormozi Gold</option>
+            <option value="mrbeast">MrBeast Lime</option>
+            <option value="cyber">Cyber Cyan</option>
+            <option value="crimson">Crimson Red</option>
+            <option value="sunset">Sunset Orange</option>
+            <option value="bubblegum">Bubblegum Pink</option>
+            <option value="violet">Electric Purple</option>
+            <option value="classic_white">Classic White</option>
+          </select>
 
-      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
-        <!-- Left: 8 Theme Cards & Position Selector (7 cols) -->
-        <div class="lg:col-span-7 space-y-4">
+          <!-- 8 Themes Grid -->
           <div>
-            <span class="text-[11px] font-bold text-zinc-400 uppercase tracking-wider block mb-2">Preset Color Aesthetics (8 Themes)</span>
-            <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5" id="stylePillsGroup">
-              <!-- 8 Preset Themes -->
+            <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block mb-2">Caption Theme</span>
+            <div class="grid grid-cols-2 gap-2" id="stylePillsGroup">
               <button type="button" onclick="selectSubtitleTheme('hormozi')" data-theme="hormozi"
-                class="theme-pill p-2.5 rounded-xl border text-left transition-all bg-indigo-600/20 border-indigo-500 text-white shadow-sm ring-1 ring-indigo-500/40 cursor-pointer flex items-center space-x-2.5">
-                <span class="w-4 h-4 rounded-full bg-[#FFD700] shrink-0 border border-black/30 shadow-sm"></span>
-                <div>
-                  <div class="text-xs font-bold leading-tight">Hormozi Gold</div>
-                  <div class="text-[10px] text-zinc-400">#FFD700 Yellow</div>
-                </div>
+                class="theme-pill p-2 rounded-xl border text-left transition-all bg-indigo-600/20 border-indigo-500 text-white shadow-sm ring-1 ring-indigo-500/40 cursor-pointer flex items-center space-x-2">
+                <span class="w-3.5 h-3.5 rounded-full bg-[#FFD700] shrink-0 border border-black/30"></span>
+                <span class="text-[11px] font-bold truncate">Hormozi Gold</span>
               </button>
 
               <button type="button" onclick="selectSubtitleTheme('mrbeast')" data-theme="mrbeast"
-                class="theme-pill p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2.5">
-                <span class="w-4 h-4 rounded-full bg-[#33FF00] shrink-0 border border-black/30 shadow-sm"></span>
-                <div>
-                  <div class="text-xs font-bold leading-tight">MrBeast Lime</div>
-                  <div class="text-[10px] text-zinc-500">#33FF00 Green</div>
-                </div>
+                class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
+                <span class="w-3.5 h-3.5 rounded-full bg-[#33FF00] shrink-0 border border-black/30"></span>
+                <span class="text-[11px] font-bold truncate">MrBeast Lime</span>
               </button>
 
               <button type="button" onclick="selectSubtitleTheme('cyber')" data-theme="cyber"
-                class="theme-pill p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2.5">
-                <span class="w-4 h-4 rounded-full bg-[#00FFFF] shrink-0 border border-black/30 shadow-sm"></span>
-                <div>
-                  <div class="text-xs font-bold leading-tight">Cyber Cyan</div>
-                  <div class="text-[10px] text-zinc-500">#00FFFF Aqua</div>
-                </div>
+                class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
+                <span class="w-3.5 h-3.5 rounded-full bg-[#00FFFF] shrink-0 border border-black/30"></span>
+                <span class="text-[11px] font-bold truncate">Cyber Cyan</span>
               </button>
 
               <button type="button" onclick="selectSubtitleTheme('crimson')" data-theme="crimson"
-                class="theme-pill p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2.5">
-                <span class="w-4 h-4 rounded-full bg-[#FF2233] shrink-0 border border-black/30 shadow-sm"></span>
-                <div>
-                  <div class="text-xs font-bold leading-tight">Crimson Red</div>
-                  <div class="text-[10px] text-zinc-500">#FF2233 Fire</div>
-                </div>
+                class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
+                <span class="w-3.5 h-3.5 rounded-full bg-[#FF2233] shrink-0 border border-black/30"></span>
+                <span class="text-[11px] font-bold truncate">Crimson Red</span>
               </button>
 
               <button type="button" onclick="selectSubtitleTheme('sunset')" data-theme="sunset"
-                class="theme-pill p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2.5">
-                <span class="w-4 h-4 rounded-full bg-[#FF7700] shrink-0 border border-black/30 shadow-sm"></span>
-                <div>
-                  <div class="text-xs font-bold leading-tight">Sunset Orange</div>
-                  <div class="text-[10px] text-zinc-500">#FF7700 Orange</div>
-                </div>
+                class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
+                <span class="w-3.5 h-3.5 rounded-full bg-[#FF7700] shrink-0 border border-black/30"></span>
+                <span class="text-[11px] font-bold truncate">Sunset Orange</span>
               </button>
 
               <button type="button" onclick="selectSubtitleTheme('bubblegum')" data-theme="bubblegum"
-                class="theme-pill p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2.5">
-                <span class="w-4 h-4 rounded-full bg-[#FF1493] shrink-0 border border-black/30 shadow-sm"></span>
-                <div>
-                  <div class="text-xs font-bold leading-tight">Bubblegum Pink</div>
-                  <div class="text-[10px] text-zinc-500">#FF1493 Pink</div>
-                </div>
+                class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
+                <span class="w-3.5 h-3.5 rounded-full bg-[#FF1493] shrink-0 border border-black/30"></span>
+                <span class="text-[11px] font-bold truncate">Bubblegum</span>
               </button>
 
               <button type="button" onclick="selectSubtitleTheme('violet')" data-theme="violet"
-                class="theme-pill p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2.5">
-                <span class="w-4 h-4 rounded-full bg-[#BF00FF] shrink-0 border border-black/30 shadow-sm"></span>
-                <div>
-                  <div class="text-xs font-bold leading-tight">Electric Violet</div>
-                  <div class="text-[10px] text-zinc-500">#BF00FF Purple</div>
-                </div>
+                class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
+                <span class="w-3.5 h-3.5 rounded-full bg-[#BF00FF] shrink-0 border border-black/30"></span>
+                <span class="text-[11px] font-bold truncate">Electric Violet</span>
               </button>
 
               <button type="button" onclick="selectSubtitleTheme('classic_white')" data-theme="classic_white"
-                class="theme-pill p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2.5">
-                <span class="w-4 h-4 rounded-full bg-white shrink-0 border border-black/30 shadow-sm"></span>
-                <div>
-                  <div class="text-xs font-bold leading-tight">Classic White</div>
-                  <div class="text-[10px] text-zinc-500">#FFFFFF Clean</div>
-                </div>
+                class="theme-pill p-2 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer flex items-center space-x-2">
+                <span class="w-3.5 h-3.5 rounded-full bg-white shrink-0 border border-black/30"></span>
+                <span class="text-[11px] font-bold truncate">Classic White</span>
               </button>
             </div>
           </div>
 
-          <!-- Position Selector & Words Per Phrase -->
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
-            <div>
-              <span class="text-[11px] font-bold text-zinc-400 uppercase tracking-wider block mb-1.5">Screen Placement</span>
-              <div class="flex items-center space-x-1.5 bg-zinc-950 border border-zinc-800 rounded-xl p-1">
-                <button type="button" onclick="setSubtitlePosition('bottom')" id="posBtn_bottom"
-                  class="pos-btn flex-1 py-1.5 text-xs rounded-lg font-bold bg-indigo-600 text-white cursor-pointer">
-                  ⬇️ Bottom
-                </button>
-                <button type="button" onclick="setSubtitlePosition('lower_third')" id="posBtn_lower_third"
-                  class="pos-btn flex-1 py-1.5 text-xs rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer">
-                  ⏸️ Lower-3rd
-                </button>
-                <button type="button" onclick="setSubtitlePosition('center')" id="posBtn_center"
-                  class="pos-btn flex-1 py-1.5 text-xs rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer">
-                  ⏺️ Center
-                </button>
-              </div>
+          <!-- Position Selector -->
+          <div>
+            <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block mb-1.5">Screen Placement</span>
+            <div class="flex items-center space-x-1 bg-zinc-950 border border-zinc-800 rounded-xl p-1">
+              <button type="button" onclick="setSubtitlePosition('bottom')" id="posBtn_bottom"
+                class="pos-btn flex-1 py-1.5 text-[11px] rounded-lg font-bold bg-indigo-600 text-white cursor-pointer">
+                ⬇️ Bottom
+              </button>
+              <button type="button" onclick="setSubtitlePosition('lower_third')" id="posBtn_lower_third"
+                class="pos-btn flex-1 py-1.5 text-[11px] rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer">
+                ⏸️ Lower-3rd
+              </button>
+              <button type="button" onclick="setSubtitlePosition('center')" id="posBtn_center"
+                class="pos-btn flex-1 py-1.5 text-[11px] rounded-lg font-bold text-zinc-400 hover:text-white cursor-pointer">
+                ⏺️ Center
+              </button>
             </div>
+          </div>
 
-            <div>
-              <span class="text-[11px] font-bold text-zinc-400 uppercase tracking-wider block mb-1.5">Caption Format</span>
-              <div class="flex items-center space-x-2 bg-zinc-950/80 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-400">
-                <i class="fa-solid fa-film text-indigo-400"></i>
-                <span>Word-by-word synchronized karaoke (2-4 words per burst)</span>
+          <!-- Authentic 9:16 Vertical Screen Preview Mockup -->
+          <div class="pt-1 flex justify-center">
+            <div class="relative w-full max-w-[270px] aspect-[9/13] bg-gradient-to-b from-zinc-950 via-zinc-900 to-black rounded-2xl border-2 border-zinc-800 shadow-2xl overflow-hidden flex flex-col justify-between p-3 select-none">
+              <!-- Phone Header -->
+              <div class="flex items-center justify-between text-[9px] text-zinc-500 font-mono border-b border-zinc-800/60 pb-1.5">
+                <span class="flex items-center space-x-1">
+                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span class="text-zinc-300 font-semibold">1080x1920 9:16</span>
+                </span>
+                <span>60 FPS</span>
+              </div>
+
+              <!-- Animated Video Stage -->
+              <div id="previewScreenContainer" class="flex-1 flex flex-col justify-end items-center relative py-3 transition-all">
+                <div id="karaokeLivePreview" class="text-center font-black tracking-wide text-sm transition-all select-none theme-hormozi">
+                  <span class="karaoke-word word-default">WAIT</span>
+                  <span class="karaoke-word word-default">FOR</span>
+                  <span class="karaoke-word word-active">THIS</span>
+                  <span class="karaoke-word word-default">MOMENT!</span>
+                </div>
+              </div>
+
+              <!-- Phone Footer -->
+              <div class="border-t border-zinc-800/60 pt-1.5 flex items-center justify-between text-[9px] text-zinc-400">
+                <span id="previewPositionLabel" class="font-mono text-zinc-400">Bottom</span>
+                <span class="text-amber-400 font-semibold flex items-center space-x-1">
+                  <i class="fa-solid fa-sparkles text-[9px]"></i>
+                  <span>Retention Tuned</span>
+                </span>
               </div>
             </div>
           </div>
+
         </div>
 
-        <!-- Right: Authentic 9:16 Vertical Screen Preview Mockup (5 cols) -->
-        <div class="lg:col-span-5 flex justify-center">
-          <div class="relative w-full max-w-[340px] aspect-[9/13] bg-gradient-to-b from-zinc-950 via-zinc-900 to-black rounded-2xl border-2 border-zinc-800 shadow-2xl overflow-hidden flex flex-col justify-between p-4 select-none">
-            <!-- Simulated Phone Header Bar -->
-            <div class="flex items-center justify-between text-[10px] text-zinc-500 font-mono border-b border-zinc-800/60 pb-2">
-              <span class="flex items-center space-x-1.5">
-                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span class="text-zinc-300 font-semibold">1080x1920 9:16</span>
-              </span>
-              <span>60 FPS Active</span>
-            </div>
-
-            <!-- Simulated Video Stage with Active Karaoke Placement -->
-            <div id="previewScreenContainer" class="flex-1 flex flex-col justify-end items-center relative py-4 transition-all">
-              <div id="karaokeLivePreview" class="text-center font-black tracking-wide text-lg transition-all select-none theme-hormozi">
-                <span class="karaoke-word word-default">WAIT</span>
-                <span class="karaoke-word word-default">FOR</span>
-                <span class="karaoke-word word-active">THIS</span>
-                <span class="karaoke-word word-default">MOMENT!</span>
-              </div>
-            </div>
-
-            <!-- Simulated Phone Footer Bar -->
-            <div class="border-t border-zinc-800/60 pt-2 flex items-center justify-between text-[10px] text-zinc-400">
-              <span id="previewPositionLabel" class="font-mono text-zinc-400">Position: Bottom (MarginV 280)</span>
-              <span class="text-amber-400 font-semibold flex items-center space-x-1">
-                <i class="fa-solid fa-sparkles text-xs"></i>
-                <span>Viral Retention Tuned</span>
-              </span>
-            </div>
-          </div>
-        </div>
       </div>
-    </div>
 
-    <!-- 2-Column Split: Source Video / Timeframes & Kernel Live Console -->
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <!-- RIGHT 2/3 COLUMN (lg:col-span-8): Source Video Preview, Kernel Logs (Half-Height), Hot Moments -->
+      <div class="lg:col-span-8 space-y-6">
 
-      <!-- LEFT COLUMN: Source Video & Interactive Timeframes (7 cols) -->
-      <div class="lg:col-span-7 space-y-6">
-
-        <!-- Source Video Card -->
+        <!-- CARD 1: Source Video Preview (Height & Width kept intact) -->
         <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-xl flex flex-col">
           <div class="flex items-center justify-between mb-3">
             <div class="flex items-center space-x-2">
               <span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>
-              <h2 class="text-sm font-bold uppercase tracking-wider text-zinc-200">Source Video Preview</h2>
-              <span id="sourceDurationBadge" class="text-xs bg-zinc-800 text-zinc-400 px-2 py-0.5 rounded-md hidden"></span>
+              <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-200">Source Video Preview</h2>
+              <span id="sourceDurationBadge" class="text-[11px] bg-zinc-800 text-zinc-400 px-2 py-0.5 rounded-md hidden"></span>
             </div>
-            <!-- Delete Source Button (Completely HIDDEN during all active processing) -->
-            <button id="deleteSourceBtn" onclick="deleteSourceVideo()" class="hidden text-xs px-3 py-1.5 rounded-lg border border-red-900/50 bg-red-950/30 text-red-400 hover:bg-red-900/40 hover:text-red-200 transition-all flex items-center space-x-1.5">
-              <i class="fa-solid fa-trash-can"></i>
-              <span>Delete Source Video</span>
+            <!-- Delete Source Button -->
+            <button id="deleteSourceBtn" onclick="deleteSourceVideo()" class="hidden text-xs px-2.5 py-1 rounded-lg border border-red-900/50 bg-red-950/30 text-red-400 hover:bg-red-900/40 hover:text-red-200 transition-all flex items-center space-x-1.5 cursor-pointer">
+              <i class="fa-solid fa-trash-can text-[11px]"></i>
+              <span>Delete Source</span>
             </button>
           </div>
 
@@ -1506,26 +1470,45 @@ HTML_PAGE = """<!DOCTYPE html>
           </div>
         </div>
 
-        <!-- Detected Hot Moments & Timeframe Selection Panel -->
+        <!-- CARD 2: Kernel Process & Live Logs (Height is exactly half of Source Video Preview) -->
+        <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 shadow-xl flex flex-col">
+          <div class="flex items-center justify-between mb-2">
+            <div class="flex items-center space-x-2">
+              <i class="fa-solid fa-terminal text-emerald-400 text-xs"></i>
+              <h3 class="text-xs font-bold uppercase tracking-wider text-zinc-200">Kernel Process & Live Logs</h3>
+            </div>
+            <div class="flex items-center space-x-2 text-[11px] text-zinc-500">
+              <span class="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span>Live Console</span>
+            </div>
+          </div>
+
+          <!-- Terminal Window: Height is half of aspect-video (~180px) -->
+          <div id="terminalWindow" class="h-[180px] max-h-[180px] bg-black/95 border border-zinc-800 rounded-xl p-3 font-mono text-[11px] leading-relaxed text-zinc-300 overflow-y-auto space-y-1 terminal-glow">
+            <div class="text-zinc-500">// Universal Clipper engine initialized. Ready.</div>
+          </div>
+        </div>
+
+        <!-- CARD 3: Detected Hot Moments (Select To Clip) -->
         <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-xl">
           <div class="flex items-center justify-between mb-4">
             <div>
-              <h3 class="text-sm font-bold uppercase tracking-wider text-zinc-200 flex items-center space-x-2">
+              <h3 class="text-xs font-bold uppercase tracking-wider text-zinc-200 flex items-center space-x-2">
                 <i class="fa-solid fa-fire text-amber-500"></i>
                 <span>Detected Hot Moments (Select To Clip)</span>
               </h3>
-              <p class="text-xs text-zinc-400 mt-0.5">Click any card to preview in player. Check the clips you want to render.</p>
+              <p class="text-[11px] text-zinc-400 mt-0.5">Click any card to preview in player. Check the clips you want to render.</p>
             </div>
             <div class="flex items-center space-x-2">
-              <button onclick="selectAllTimeframes(true)" class="text-xs text-indigo-400 hover:text-indigo-300 font-medium px-2 py-1 bg-zinc-800 rounded">Select All</button>
-              <button onclick="selectAllTimeframes(false)" class="text-xs text-zinc-400 hover:text-zinc-200 font-medium px-2 py-1 bg-zinc-800 rounded">Clear</button>
+              <button onclick="selectAllTimeframes(true)" class="text-xs text-indigo-400 hover:text-indigo-300 font-medium px-2 py-1 bg-zinc-800 rounded cursor-pointer">Select All</button>
+              <button onclick="selectAllTimeframes(false)" class="text-xs text-zinc-400 hover:text-zinc-200 font-medium px-2 py-1 bg-zinc-800 rounded cursor-pointer">Clear</button>
             </div>
           </div>
 
           <!-- Timeframes Container -->
-          <div id="timeframesContainer" class="space-y-3 max-h-[380px] overflow-y-auto pr-1">
+          <div id="timeframesContainer" class="space-y-3 max-h-[360px] overflow-y-auto pr-1">
             <div class="text-xs text-zinc-500 py-8 text-center">
-              Click <b>"Scan & Detect Hooks"</b> above to analyze the video and isolate hot moments.
+              Click <b>"Scan & Detect Viral Hooks"</b> above to analyze the video and isolate hot moments.
             </div>
           </div>
 
@@ -1560,12 +1543,12 @@ HTML_PAGE = """<!DOCTYPE html>
                   <input type="number" id="customEnd" step="0.5" value="30.0" class="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1 text-xs text-white">
                 </div>
                 <div class="flex items-end">
-                  <button onclick="setCustomFromPlayer()" class="w-full bg-zinc-800 hover:bg-zinc-700 text-zinc-200 py-1.5 px-2 rounded-lg text-[11px] font-medium" title="Set start time to current player position">
+                  <button onclick="setCustomFromPlayer()" class="w-full bg-zinc-800 hover:bg-zinc-700 text-zinc-200 py-1.5 px-2 rounded-lg text-[11px] font-medium cursor-pointer" title="Set start time to current player position">
                     Use Player Time
                   </button>
                 </div>
                 <div class="flex items-end">
-                  <button onclick="addCustomTimeframe()" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-1.5 px-2 rounded-lg text-[11px] font-bold">
+                  <button onclick="addCustomTimeframe()" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-1.5 px-2 rounded-lg text-[11px] font-bold cursor-pointer">
                     + Add To List
                   </button>
                 </div>
@@ -1577,78 +1560,68 @@ HTML_PAGE = """<!DOCTYPE html>
 
       </div>
 
-      <!-- RIGHT COLUMN: Kernel Think & Live Console (5 cols) -->
-      <div class="lg:col-span-5 flex flex-col">
-        <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-xl flex-1 flex flex-col">
-          <div class="flex items-center justify-between mb-3">
-            <div class="flex items-center space-x-2">
-              <i class="fa-solid fa-terminal text-emerald-400"></i>
-              <h3 class="text-sm font-bold uppercase tracking-wider text-zinc-200">Kernel Process & Live Logs</h3>
-            </div>
-            <div class="flex items-center space-x-2 text-xs text-zinc-500">
-              <span class="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span>Live Console</span>
-            </div>
-          </div>
-
-          <!-- Terminal Screen -->
-          <div id="terminalWindow" class="flex-1 bg-black/90 border border-zinc-800 rounded-xl p-4 font-mono text-xs text-zinc-300 overflow-y-auto max-h-[640px] min-h-[500px] space-y-1 terminal-glow">
-            <div class="text-zinc-500">// Universal Clipper engine initialized. Ready.</div>
-          </div>
-        </div>
-      </div>
-
     </div>
 
-    <!-- SECTION 3: DRAFT CLIPS REVIEW WITH BULK APPROVAL -->
-    <section class="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-xl">
-      <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 pb-4 border-b border-zinc-800">
-        <div>
-          <h2 class="text-base font-bold text-zinc-100 flex items-center space-x-2">
-            <i class="fa-solid fa-layer-group text-indigo-400"></i>
-            <span>Draft Clips Review (draft_clips/)</span>
-          </h2>
-          <p class="text-xs text-zinc-400 mt-1">Review 9:16 Shorts rendered with Lanczos4 sharpness & burned captions. Edit title & tags, regenerate if needed, or approve in bulk.</p>
+    <!-- BOTTOM SECTION: 2 Partitions Side-by-Side (50% / 50%) with Min/Max Height, Scroll & Lazy Loading -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+
+      <!-- PARTITION 1: Draft Clips Review (draft_clips/) -->
+      <section class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-xl flex flex-col">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 pb-3 border-b border-zinc-800">
+          <div>
+            <h2 class="text-sm font-bold text-zinc-100 flex items-center space-x-2">
+              <i class="fa-solid fa-layer-group text-indigo-400"></i>
+              <span>Draft Clips Review (draft_clips/)</span>
+            </h2>
+            <p class="text-[11px] text-zinc-400 mt-0.5">Review 9:16 Shorts with burned captions. Edit metadata or bulk approve.</p>
+          </div>
+
+          <!-- Bulk Action Controls -->
+          <div id="draftBulkControls" class="flex items-center space-x-2">
+            <span id="draftCountBadge" class="text-xs bg-indigo-950 text-indigo-300 border border-indigo-800 px-2.5 py-1 rounded-full font-semibold">0 Drafts</span>
+            <button onclick="toggleAllDrafts(true)" class="text-xs px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg font-medium cursor-pointer">Select All</button>
+            <button id="bulkApproveBtn" onclick="bulkApproveDrafts()" disabled
+              class="text-xs px-3 py-1 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold rounded-lg shadow-lg shadow-emerald-600/20 opacity-40 cursor-not-allowed flex items-center space-x-1.5 transition-all">
+              <i class="fa-solid fa-check-double text-xs"></i>
+              <span id="bulkApproveText">Approve Selected</span>
+            </button>
+          </div>
         </div>
 
-        <!-- Bulk Action Controls -->
-        <div id="draftBulkControls" class="flex items-center space-x-2.5">
-          <span id="draftCountBadge" class="text-xs bg-indigo-950 text-indigo-300 border border-indigo-800 px-3 py-1 rounded-full font-semibold">0 Drafts</span>
-          <button onclick="toggleAllDrafts(true)" class="text-xs px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg font-medium">Select All</button>
-          <button id="bulkApproveBtn" onclick="bulkApproveDrafts()" disabled
-            class="text-xs px-3.5 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold rounded-lg shadow-lg shadow-emerald-600/20 opacity-40 cursor-not-allowed flex items-center space-x-1.5 transition-all">
-            <i class="fa-solid fa-check-double"></i>
-            <span id="bulkApproveText">Approve Selected</span>
-          </button>
+        <!-- Scrollable partition with Min/Max Height & Lazy Loading -->
+        <div class="min-h-[440px] max-h-[640px] overflow-y-auto pr-1">
+          <div id="draftClipsGrid" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div class="col-span-full py-12 text-center text-zinc-500 text-xs">
+              No draft clips rendered yet. Scan a video above, select your favorite moments, and click <b>Render Selected Clips</b>.
+            </div>
+          </div>
         </div>
-      </div>
+      </section>
 
-      <div id="draftClipsGrid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-        <div class="col-span-full py-12 text-center text-zinc-500 text-xs">
-          No draft clips rendered yet. Scan a video above, select your favorite moments, and click <b>Render Selected Clips</b>.
+      <!-- PARTITION 2: Approved Final Clips (final_clips/) -->
+      <section class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-xl flex flex-col">
+        <div class="flex items-center justify-between mb-4 pb-3 border-b border-zinc-800">
+          <div>
+            <h2 class="text-sm font-bold text-emerald-400 flex items-center space-x-2">
+              <i class="fa-solid fa-circle-check"></i>
+              <span>Approved Final Clips (final_clips/)</span>
+            </h2>
+            <p class="text-[11px] text-zinc-400 mt-0.5">Ready for YouTube Shorts, Reels, and TikTok with verified metadata.</p>
+          </div>
+          <span id="approvedCountBadge" class="text-xs bg-emerald-950 text-emerald-300 border border-emerald-800 px-2.5 py-1 rounded-full font-semibold">0 Approved</span>
         </div>
-      </div>
-    </section>
 
-    <!-- SECTION 4: APPROVED FINAL CLIPS -->
-    <section class="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-xl">
-      <div class="flex items-center justify-between mb-6 pb-4 border-b border-zinc-800">
-        <div>
-          <h2 class="text-base font-bold text-emerald-400 flex items-center space-x-2">
-            <i class="fa-solid fa-circle-check"></i>
-            <span>Approved Final Clips (final_clips/)</span>
-          </h2>
-          <p class="text-xs text-zinc-400 mt-1">Ready for publishing to YouTube Shorts, Instagram Reels, and TikTok with verified metadata .txt files.</p>
+        <!-- Scrollable partition with Min/Max Height & Lazy Loading -->
+        <div class="min-h-[440px] max-h-[640px] overflow-y-auto pr-1">
+          <div id="approvedClipsGrid" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div class="col-span-full py-12 text-center text-zinc-500 text-xs">
+              No approved clips yet. Approve draft clips above to move them here.
+            </div>
+          </div>
         </div>
-        <span id="approvedCountBadge" class="text-xs bg-emerald-950 text-emerald-300 border border-emerald-800 px-3 py-1 rounded-full font-semibold">0 Approved</span>
-      </div>
+      </section>
 
-      <div id="approvedClipsGrid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-        <div class="col-span-full py-8 text-center text-zinc-500 text-xs">
-          No approved clips yet. Approve draft clips above to move them here.
-        </div>
-      </div>
-    </section>
+    </div>
 
     <!-- System Diagnostics Doctor Modal -->
     <div id="doctorModal" class="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
@@ -1658,7 +1631,7 @@ HTML_PAGE = """<!DOCTYPE html>
             <i class="fa-solid fa-stethoscope text-indigo-400 text-lg"></i>
             <h3 class="text-base font-bold text-white">System Diagnostics & Environment Doctor</h3>
           </div>
-          <button onclick="closeDoctorModal()" class="text-zinc-400 hover:text-white text-lg px-2 py-1">
+          <button onclick="closeDoctorModal()" class="text-zinc-400 hover:text-white text-lg px-2 py-1 cursor-pointer">
             <i class="fa-solid fa-xmark"></i>
           </button>
         </div>
@@ -1670,7 +1643,7 @@ HTML_PAGE = """<!DOCTYPE html>
           <!-- Dynamically populated -->
         </div>
         <div class="border-t border-zinc-800 pt-3 flex justify-end">
-          <button onclick="closeDoctorModal()" class="bg-zinc-800 hover:bg-zinc-700 text-white px-4 py-1.5 rounded-lg text-xs font-semibold">Close</button>
+          <button onclick="closeDoctorModal()" class="bg-zinc-800 hover:bg-zinc-700 text-white px-4 py-1.5 rounded-lg text-xs font-semibold cursor-pointer">Close</button>
         </div>
       </div>
     </div>
@@ -2566,9 +2539,8 @@ HTML_PAGE = """<!DOCTYPE html>
           `;
         } else {
           videoBoxHtml = `
-            <div class="relative w-full aspect-[9/16] max-h-[380px] bg-black rounded-xl overflow-hidden border border-zinc-800 flex items-center justify-center">
-              <video controls playsinline ${d.poster ? `poster="${d.poster}"` : ''} class="w-full h-full object-contain" preload="metadata">
-                <source src="/media/draft/${d.filename}#t=0.001" type="video/mp4">
+            <div class="relative w-full aspect-[9/16] max-h-[360px] bg-black rounded-xl overflow-hidden border border-zinc-800 flex items-center justify-center">
+              <video controls playsinline preload="none" ${d.poster ? `poster="${d.poster}"` : ''} class="w-full h-full object-contain lazy-media" data-src="/media/draft/${d.filename}#t=0.001">
               </video>
             </div>
           `;
@@ -2598,7 +2570,7 @@ HTML_PAGE = """<!DOCTYPE html>
             <div class="space-y-2 pt-1 border-t border-zinc-900">
               <div class="flex items-center justify-between">
                 <label class="text-[10px] font-semibold text-zinc-400 uppercase">Viral Title</label>
-                <button onclick="regenerateDraftMeta(${d.id})" class="text-[10px] text-indigo-400 hover:text-indigo-300 font-medium">
+                <button onclick="regenerateDraftMeta(${d.id})" class="text-[10px] text-indigo-400 hover:text-indigo-300 font-medium cursor-pointer">
                   <i class="fa-solid fa-arrows-rotate mr-1"></i>Regen
                 </button>
               </div>
@@ -2620,6 +2592,7 @@ HTML_PAGE = """<!DOCTYPE html>
       }).join('');
 
       updateBulkApproveBtn();
+      initLazyMediaObserver();
     }
 
     function toggleDraftCheck(clipId) {
@@ -2701,7 +2674,7 @@ HTML_PAGE = """<!DOCTYPE html>
     function renderApprovedClips(approved) {
       function getClipNum(item) {
         if (item.clip_num !== undefined) return item.clip_num;
-        const m = (item.filename || item.id || '').match(/clip_(\d+)/);
+        const m = (item.filename || item.id || '').match(/clip_(\\d+)/);
         return m ? parseInt(m[1], 10) : 999999;
       }
 
@@ -2733,9 +2706,8 @@ HTML_PAGE = """<!DOCTYPE html>
               <span class="text-[10px] bg-emerald-950 text-emerald-400 px-2 py-0.5 rounded border border-emerald-800 font-semibold">Final Clip</span>
             </div>
 
-            <div class="relative w-full aspect-[9/16] max-h-[380px] bg-black rounded-xl overflow-hidden border border-zinc-800 flex items-center justify-center">
-              <video controls playsinline ${posterAttr} class="w-full h-full object-contain" preload="metadata">
-                <source src="/media/final/${a.filename}#t=0.001" type="video/mp4">
+            <div class="relative w-full aspect-[9/16] max-h-[360px] bg-black rounded-xl overflow-hidden border border-zinc-800 flex items-center justify-center">
+              <video controls playsinline preload="none" ${posterAttr} class="w-full h-full object-contain lazy-media" data-src="/media/final/${a.filename}#t=0.001">
               </video>
             </div>
 
@@ -2752,13 +2724,52 @@ HTML_PAGE = """<!DOCTYPE html>
                 <i class="fa-solid fa-download mr-1"></i> Download MP4
               </a>
               <button onclick="copyMetadata('${escapeHtml(a.title)}', '${escapeHtml(a.hashtags)}')"
-                class="px-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs py-2 rounded-lg transition-all" title="Copy Title & Tags">
+                class="px-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs py-2 rounded-lg transition-all cursor-pointer" title="Copy Title & Tags">
                 <i class="fa-regular fa-copy"></i>
               </button>
             </div>
           </div>
         `;
       }).join('');
+
+      initLazyMediaObserver();
+    }
+
+    let lazyMediaObserver = null;
+    function initLazyMediaObserver() {
+      if (!('IntersectionObserver' in window)) {
+        document.querySelectorAll('video.lazy-media:not([data-loaded])').forEach(v => {
+          const src = v.getAttribute('data-src');
+          if (src) {
+            v.innerHTML = `<source src="${src}" type="video/mp4">`;
+            v.setAttribute('data-loaded', 'true');
+          }
+        });
+        return;
+      }
+
+      if (lazyMediaObserver) {
+        lazyMediaObserver.disconnect();
+      }
+
+      lazyMediaObserver = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            const video = entry.target;
+            if (!video.hasAttribute('data-loaded')) {
+              const src = video.getAttribute('data-src');
+              if (src) {
+                video.innerHTML = `<source src="${src}" type="video/mp4">`;
+                video.setAttribute('data-loaded', 'true');
+              }
+            }
+          }
+        });
+      }, { rootMargin: '150px 0px' });
+
+      document.querySelectorAll('video.lazy-media:not([data-loaded])').forEach(el => {
+        lazyMediaObserver.observe(el);
+      });
     }
 
     async function approveDraftClip(clipId) {
