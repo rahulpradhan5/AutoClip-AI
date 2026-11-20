@@ -1,4 +1,4 @@
-# AutoClip-AI: Local AI Video Clipper & Shorts Studio
+# 🎬 AutoClip-AI: Local AI Video Clipper & Shorts Studio
 
 Autonomous, 100% private, local video clipper that converts long videos, podcasts, and livestreams into viral 9:16 vertical Shorts and Reels with AI face tracking, karaoke subtitles, and high-retention hook detection.
 
@@ -26,11 +26,11 @@ This will automatically launch the backend server and open the web studio at **h
 
 ## Installation & Setup
 
-### Windows Setup
+### 🪟 Windows Setup
 
 #### Step 1: Install Python
 Download and install [Python 3.10+](https://www.python.org/downloads/).  
-**Note**: Make sure to check the box **"Add Python to PATH"** during installation.
+⚠️ **Note**: Make sure to check the box **"Add Python to PATH"** during installation.
 
 #### Step 2: Install FFmpeg
 Open **Command Prompt** (cmd) and run:
@@ -61,7 +61,7 @@ Open **http://localhost:8888** in your browser.
 
 ---
 
-### macOS Setup
+### 🍎 macOS Setup
 
 #### Step 1: Install Dependencies via Homebrew
 Open **Terminal** and run:
@@ -90,7 +90,7 @@ Open **http://localhost:8888** in your browser.
 
 ---
 
-### Linux (Ubuntu / Debian / Fedora)
+### 🐧 Linux (Ubuntu / Debian / Fedora)
 
 #### Step 1: Install System Dependencies
 Open **Terminal** and run:
