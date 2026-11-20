@@ -41,6 +41,11 @@ except ImportError:
     def generate_clip_metadata(text, hook, idx=1, variation=0):
         return f"Viral Moment #{idx} 🤯", "#Shorts #Viral #Trending #HighStakes #FYP"
 
+try:
+    import youtube_uploader
+except ImportError:
+    youtube_uploader = None
+
 PYTHON_EXE = sys.executable
 
 def find_binary(name: str, fallback_paths: list[str]) -> str:
@@ -141,6 +146,7 @@ class AppState:
             self.subtitle_format = "karaoke"
             self.last_clipped_num = 0
             self.last_clipped_end_sec = 0.0
+            self.youtube_uploads = {}
             self.download_info = {
                 "active": False,
                 "percent": 0.0,
@@ -184,6 +190,7 @@ class AppState:
                 "subtitle_uppercase": getattr(self, "subtitle_uppercase", True),
                 "subtitle_format": getattr(self, "subtitle_format", "karaoke"),
                 "download_info": dict(self.download_info),
+                "youtube_uploads": dict(getattr(self, "youtube_uploads", {})),
                 "last_clipped_num": max_num,
                 "last_clipped_end_sec": max_end,
             }
@@ -841,6 +848,34 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(payload)
             return
 
+        if path == "/api/youtube/status":
+            try:
+                yt_status = youtube_uploader.get_status() if youtube_uploader else {"connected": False, "error": "YouTube uploader module unavailable"}
+            except Exception as e:
+                yt_status = {"connected": False, "error": str(e)}
+            payload = json.dumps(yt_status).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if path.startswith("/api/youtube/upload-status"):
+            query = parse_qs(parsed.query)
+            key = query.get("key", [""])[0]
+            with state.lock:
+                up_info = state.youtube_uploads.get(key, {"status": "idle", "progress": 0.0})
+            payload = json.dumps(up_info).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
         if path == "/media/source":
             source_mp4 = TEMP_DIR / "source.mp4"
             self.send_file_with_range(source_mp4, "video/mp4")
@@ -1201,6 +1236,147 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(e))
             return
 
+        # YouTube Studio: Save OAuth Client Secrets
+        if path == "/api/youtube/save-secrets":
+            try:
+                data = json.loads(body) if body else {}
+                secrets_content = data.get("client_secrets") or data
+                success = youtube_uploader.save_client_secrets(secrets_content) if youtube_uploader else False
+                st = youtube_uploader.get_status() if youtube_uploader else {}
+                resp_bytes = json.dumps({"success": success, "status": st}).encode("utf-8")
+                self.send_response(HTTPStatus.OK if success else HTTPStatus.BAD_REQUEST)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp_bytes)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(resp_bytes)
+                return
+            except Exception as e:
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(e))
+                return
+
+        # YouTube Studio: Connect (OAuth login / token save)
+        if path == "/api/youtube/connect":
+            try:
+                data = json.loads(body) if body else {}
+                if "token_json" in data:
+                    success = youtube_uploader.save_token_json(data["token_json"]) if youtube_uploader else False
+                    st = youtube_uploader.get_status() if youtube_uploader else {}
+                    res_obj = {"success": success, "status": st}
+                else:
+                    res_obj = youtube_uploader.start_local_auth(port=8089) if youtube_uploader else {"error": "Module unavailable"}
+                resp_bytes = json.dumps(res_obj).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp_bytes)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(resp_bytes)
+                return
+            except Exception as e:
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(e))
+                return
+
+        # YouTube Studio: Disconnect
+        if path == "/api/youtube/disconnect":
+            try:
+                success = youtube_uploader.disconnect() if youtube_uploader else False
+                st = youtube_uploader.get_status() if youtube_uploader else {}
+                resp_bytes = json.dumps({"success": success, "status": st}).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp_bytes)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(resp_bytes)
+                return
+            except Exception as e:
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(e))
+                return
+
+        # YouTube Studio: Direct Upload Short
+        if path == "/api/youtube/upload":
+            if not youtube_uploader:
+                self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "YouTube Uploader module not available")
+                return
+
+            try:
+                data = json.loads(body) if body else {}
+                filename = data.get("filename", "")
+                folder = data.get("folder", "final")
+                title = data.get("title", "")
+                description = data.get("description", "")
+                raw_tags = data.get("tags", "")
+                privacy = data.get("privacy", "public")
+                category_id = data.get("category_id", "22")
+            except Exception as e:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid request JSON")
+                return
+
+            if isinstance(raw_tags, str):
+                tags_list = [t.strip().lstrip("#") for t in re.split(r"[,\s]+", raw_tags) if t.strip()]
+            else:
+                tags_list = list(raw_tags)
+
+            video_dir = FINAL_DIR if folder == "final" else DRAFT_DIR
+            video_path = video_dir / filename
+            if not video_path.exists():
+                self.send_error(HTTPStatus.NOT_FOUND, f"Video file not found: {filename}")
+                return
+
+            upload_key = f"{folder}_{filename}"
+            with state.lock:
+                state.youtube_uploads[upload_key] = {
+                    "status": "uploading",
+                    "progress": 0.0,
+                    "message": "Connecting to YouTube Studio...",
+                    "url": None,
+                    "error": None
+                }
+
+            def _upload_worker():
+                def _prog(pct, msg):
+                    with state.lock:
+                        if upload_key in state.youtube_uploads:
+                            state.youtube_uploads[upload_key]["progress"] = round(pct, 1)
+                            state.youtube_uploads[upload_key]["message"] = msg
+
+                state.log(f"🚀 [YouTube Studio] Publishing {filename} as Short ({privacy.upper()})...")
+                res = youtube_uploader.upload_short(
+                    video_path=str(video_path),
+                    title=title,
+                    description=description,
+                    tags=tags_list,
+                    category_id=category_id,
+                    privacy_status=privacy,
+                    progress_callback=_prog
+                )
+                with state.lock:
+                    if "error" in res:
+                        state.youtube_uploads[upload_key]["status"] = "error"
+                        state.youtube_uploads[upload_key]["error"] = res["error"]
+                        state.youtube_uploads[upload_key]["message"] = f"Failed: {res['error']}"
+                        state.log(f"❌ [YouTube Studio] Upload error for {filename}: {res['error']}")
+                    else:
+                        state.youtube_uploads[upload_key]["status"] = "completed"
+                        state.youtube_uploads[upload_key]["progress"] = 100.0
+                        state.youtube_uploads[upload_key]["url"] = res.get("url")
+                        state.youtube_uploads[upload_key]["watch_url"] = res.get("watch_url")
+                        state.youtube_uploads[upload_key]["message"] = "Published successfully!"
+                        state.log(f"✓ [YouTube Studio] Published {filename} to YouTube Shorts! URL: {res.get('url')}")
+
+            t = threading.Thread(target=_upload_worker, daemon=True)
+            t.start()
+
+            resp_bytes = json.dumps({"status": "started", "upload_key": upload_key}).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp_bytes)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(resp_bytes)
+            return
+
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def log_message(self, format, *args):
@@ -1382,6 +1558,12 @@ HTML_PAGE = """<!DOCTYPE html>
       </div>
     </div>
     <div class="flex items-center space-x-3">
+      <!-- YouTube Studio Connect Pill -->
+      <button id="ytConnectBtn" onclick="openYouTubeModal()" class="px-3.5 py-1.5 rounded-full text-xs font-semibold border border-red-900/60 bg-red-950/40 text-red-300 hover:bg-red-900/60 hover:text-white transition-all flex items-center space-x-2 cursor-pointer shadow-sm">
+        <i class="fa-brands fa-youtube text-red-500 text-sm"></i>
+        <span id="ytBtnLabel">Connect YouTube Studio</span>
+      </button>
+
       <button onclick="openDoctorModal()" class="px-3 py-1.5 rounded-full text-xs font-semibold border border-indigo-700/60 bg-indigo-950/40 text-indigo-300 hover:bg-indigo-900/50 transition-all flex items-center space-x-1.5 cursor-pointer shadow-sm">
         <i class="fa-solid fa-stethoscope text-indigo-400"></i>
         <span>System Doctor</span>
@@ -1922,6 +2104,266 @@ HTML_PAGE = """<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- YouTube Studio Connection Modal -->
+    <div id="youtubeModal" class="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4 hidden">
+      <div class="bg-zinc-900 border border-zinc-700 rounded-2xl max-w-xl w-full p-6 shadow-2xl relative space-y-5 max-h-[90vh] overflow-y-auto">
+        <div class="flex items-center justify-between border-b border-zinc-800 pb-3">
+          <div class="flex items-center space-x-2.5">
+            <div class="w-8 h-8 rounded-lg bg-red-600/20 border border-red-500/30 flex items-center justify-center text-red-500">
+              <i class="fa-brands fa-youtube text-lg"></i>
+            </div>
+            <div>
+              <h3 class="text-base font-bold text-white">YouTube Studio Connector</h3>
+              <p class="text-[11px] text-zinc-400">Directly publish 60 FPS Shorts with titles, hashtags & tags</p>
+            </div>
+          </div>
+          <button onclick="closeYouTubeModal()" class="text-zinc-400 hover:text-white text-lg px-2 py-1 cursor-pointer">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+
+        <!-- Connected State Card -->
+        <div id="ytConnectedSection" class="hidden space-y-4">
+          <div class="p-4 rounded-xl bg-gradient-to-r from-red-950/40 via-zinc-900 to-zinc-900 border border-red-900/50 flex items-center space-x-4">
+            <img id="ytChannelAvatar" src="" alt="Avatar" class="w-14 h-14 rounded-full border-2 border-red-500 shadow-md object-cover bg-zinc-800">
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center space-x-2">
+                <span id="ytChannelTitle" class="text-sm font-bold text-white truncate">Connected Channel</span>
+                <span class="text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 px-2 py-0.5 rounded-full font-bold">Active ✓</span>
+              </div>
+              <p id="ytChannelHandle" class="text-xs text-zinc-400 font-mono truncate">@handle</p>
+              <div class="flex items-center space-x-3 mt-1.5 text-[11px] text-zinc-300">
+                <span><i class="fa-solid fa-users text-red-400 mr-1"></i><b id="ytSubCount">0</b> Subscribers</span>
+                <span><i class="fa-solid fa-video text-zinc-400 mr-1"></i><b id="ytVideoCount">0</b> Videos</span>
+              </div>
+            </div>
+          </div>
+          <div class="p-3 bg-zinc-950 rounded-xl border border-zinc-800 text-xs text-zinc-400 flex items-center justify-between">
+            <div class="flex items-center space-x-2">
+              <i class="fa-solid fa-shield-halved text-emerald-400"></i>
+              <span>OAuth 2.0 Upload Scope Active</span>
+            </div>
+            <button onclick="disconnectYouTube()" class="text-red-400 hover:text-red-300 font-semibold text-xs px-2.5 py-1 rounded-lg bg-red-950/60 border border-red-900/40 hover:bg-red-900/50 transition-all cursor-pointer">
+              <i class="fa-solid fa-arrow-right-from-bracket mr-1"></i> Disconnect
+            </button>
+          </div>
+        </div>
+
+        <!-- Disconnected Setup State -->
+        <div id="ytDisconnectedSection" class="space-y-4">
+          <div class="p-3.5 bg-red-950/30 border border-red-900/50 rounded-xl text-xs text-red-200 flex items-start space-x-3">
+            <i class="fa-solid fa-circle-info text-red-400 text-sm mt-0.5"></i>
+            <div class="space-y-1">
+              <div class="font-bold text-white">Connect YouTube Data API v3</div>
+              <p class="text-zinc-300 leading-relaxed">Publish your 1080x1920 60 FPS vertical clips straight to YouTube Shorts with viral tags and title in one click.</p>
+            </div>
+          </div>
+
+          <!-- Step 1: OAuth Client Secrets File / Text -->
+          <div class="p-4 bg-zinc-950 rounded-xl border border-zinc-800 space-y-3">
+            <div class="flex items-center justify-between">
+              <label class="text-xs font-bold text-zinc-200 uppercase tracking-wide flex items-center space-x-1.5">
+                <span class="w-4 h-4 rounded-full bg-indigo-600 text-[10px] text-white flex items-center justify-center font-bold">1</span>
+                <span>Google Cloud OAuth Credentials</span>
+              </label>
+              <span id="ytSecretsStatus" class="text-[10px] px-2 py-0.5 rounded-full font-mono font-bold bg-zinc-900 text-zinc-400 border border-zinc-800">Secrets Missing</span>
+            </div>
+
+            <!-- Drag & Drop / File Input -->
+            <div class="border-2 border-dashed border-zinc-800 hover:border-indigo-500 rounded-xl p-3 text-center transition-all bg-zinc-900/50">
+              <input type="file" id="ytSecretsFile" accept=".json" onchange="handleSecretsFileSelected(event)" class="hidden">
+              <label for="ytSecretsFile" class="cursor-pointer block space-y-1">
+                <i class="fa-solid fa-cloud-arrow-up text-zinc-400 text-lg"></i>
+                <div class="text-xs font-semibold text-zinc-300">Click to upload <span class="text-indigo-400 font-mono">client_secrets.json</span></div>
+                <div class="text-[10px] text-zinc-500">From Google Cloud Console &gt; Credentials &gt; OAuth 2.0 Client IDs</div>
+              </label>
+            </div>
+
+            <!-- Or Paste JSON / Credentials -->
+            <div class="space-y-1">
+              <div class="flex items-center justify-between text-[11px] text-zinc-400">
+                <span>Or paste Client ID & Client Secret / JSON:</span>
+              </div>
+              <textarea id="ytSecretsText" rows="3" placeholder='{"installed": {"client_id": "...", "client_secret": "..."}}' 
+                class="w-full bg-zinc-900 border border-zinc-800 focus:border-indigo-500 rounded-lg p-2 text-xs font-mono text-zinc-200 placeholder-zinc-600"></textarea>
+              <button onclick="saveOAuthSecrets()" class="w-full bg-zinc-800 hover:bg-zinc-700 text-white text-xs py-2 rounded-lg font-semibold transition-all cursor-pointer">
+                <i class="fa-solid fa-floppy-disk mr-1"></i> Save Credentials
+              </button>
+            </div>
+
+            <!-- Free 2-Min Setup Guide Accordion -->
+            <details class="text-[11px] text-zinc-400 bg-zinc-900/70 p-2.5 rounded-lg border border-zinc-800/80 cursor-pointer">
+              <summary class="font-bold text-zinc-300 hover:text-white select-none">
+                <i class="fa-solid fa-circle-question text-indigo-400 mr-1"></i> How to get free Google Cloud credentials (2 minutes)
+              </summary>
+              <div class="mt-2.5 space-y-1.5 pl-3 border-l-2 border-indigo-500/50 text-zinc-300">
+                <p>1. Open <a href="https://console.cloud.google.com" target="_blank" class="text-indigo-400 underline">Google Cloud Console</a> and create or select a project.</p>
+                <p>2. In <b>APIs &amp; Services &gt; Library</b>, search and <b>Enable "YouTube Data API v3"</b>.</p>
+                <p>3. In <b>OAuth consent screen</b>, select <i>External</i>, set App Name, and add your Google email to <b>Test users</b>.</p>
+                <p>4. In <b>Credentials &gt; Create Credentials &gt; OAuth client ID</b>, select Application type: <b>Desktop app</b>.</p>
+                <p>5. Click <b>Download JSON</b> (or copy Client ID & Secret) and upload or paste above!</p>
+              </div>
+            </details>
+          </div>
+
+          <!-- Step 2: Sign-in & Authorize -->
+          <div class="p-4 bg-zinc-950 rounded-xl border border-zinc-800 space-y-3">
+            <label class="text-xs font-bold text-zinc-200 uppercase tracking-wide flex items-center space-x-1.5">
+              <span class="w-4 h-4 rounded-full bg-red-600 text-[10px] text-white flex items-center justify-center font-bold">2</span>
+              <span>Authorize YouTube Studio Access</span>
+            </label>
+            <button id="ytAuthLaunchBtn" onclick="startYouTubeOAuthFlow()" class="w-full bg-gradient-to-r from-red-600 via-rose-600 to-red-600 hover:from-red-500 hover:to-rose-500 text-white text-xs py-2.5 rounded-xl font-bold shadow-lg shadow-red-600/30 flex items-center justify-center space-x-2 transition-all cursor-pointer">
+              <i class="fa-brands fa-google text-sm"></i>
+              <span>Sign in with Google &amp; Connect YouTube</span>
+            </button>
+            <div id="ytAuthStatusMsg" class="hidden text-xs text-center p-2 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-300"></div>
+
+            <!-- Alternative manual token paste -->
+            <details class="text-[11px] text-zinc-400">
+              <summary class="cursor-pointer text-zinc-500 hover:text-zinc-300 select-none">Or paste token.json directly</summary>
+              <div class="mt-2 space-y-2">
+                <textarea id="ytTokenJsonInput" rows="2" placeholder='{"token": "...", "refresh_token": "...", "client_id": "..."}' 
+                  class="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-2 text-xs font-mono text-zinc-200"></textarea>
+                <button onclick="saveDirectTokenJson()" class="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-xs text-white rounded-lg font-semibold cursor-pointer">
+                  Save Token
+                </button>
+              </div>
+            </details>
+          </div>
+        </div>
+
+        <div class="border-t border-zinc-800 pt-3 flex justify-end">
+          <button onclick="closeYouTubeModal()" class="bg-zinc-800 hover:bg-zinc-700 text-white px-4 py-1.5 rounded-lg text-xs font-semibold cursor-pointer">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- YouTube Short Publishing Modal -->
+    <div id="publishModal" class="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4 hidden">
+      <div class="bg-zinc-900 border border-zinc-700 rounded-2xl max-w-xl w-full p-6 shadow-2xl relative space-y-4 max-h-[92vh] overflow-y-auto">
+        <div class="flex items-center justify-between border-b border-zinc-800 pb-3">
+          <div class="flex items-center space-x-2.5">
+            <div class="w-8 h-8 rounded-lg bg-red-600/20 border border-red-500/30 flex items-center justify-center text-red-500">
+              <i class="fa-brands fa-youtube text-lg"></i>
+            </div>
+            <div>
+              <h3 class="text-base font-bold text-white flex items-center space-x-2">
+                <span>Publish to YouTube Shorts</span>
+                <span class="text-[10px] bg-red-600 text-white px-2 py-0.5 rounded-full font-bold">1080x1920 60 FPS</span>
+              </h3>
+              <p id="publishChannelHint" class="text-[11px] text-zinc-400">Target Channel: Loading...</p>
+            </div>
+          </div>
+          <button onclick="closePublishModal()" class="text-zinc-400 hover:text-white text-lg px-2 py-1 cursor-pointer">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+
+        <!-- Target Video File Banner -->
+        <div class="p-3 bg-zinc-950 rounded-xl border border-zinc-800 flex items-center justify-between">
+          <div class="flex items-center space-x-3">
+            <div class="w-10 h-14 bg-black rounded-lg border border-zinc-800 flex items-center justify-center text-red-500 shadow-inner">
+              <i class="fa-solid fa-play text-sm"></i>
+            </div>
+            <div>
+              <div id="publishFilename" class="text-xs font-bold text-white font-mono">clip_1.mp4</div>
+              <div id="publishDuration" class="text-[11px] text-zinc-400">1080x1920 60 FPS • Vertical Short</div>
+            </div>
+          </div>
+          <span id="publishFolderBadge" class="text-[10px] px-2 py-1 rounded bg-zinc-900 border border-zinc-800 text-zinc-300 font-mono uppercase">final</span>
+        </div>
+
+        <!-- Metadata Form -->
+        <div class="space-y-3.5 text-xs">
+          <div>
+            <div class="flex items-center justify-between mb-1">
+              <label class="font-bold text-zinc-300 uppercase tracking-wide">Short Title (Max 100 chars)</label>
+              <span id="publishTitleCount" class="text-[10px] font-mono text-zinc-500">0/100</span>
+            </div>
+            <input type="text" id="publishTitleInput" maxlength="100" oninput="updatePublishCounts()" 
+              class="w-full bg-zinc-950 border border-zinc-800 focus:border-red-500 rounded-xl px-3 py-2 text-white font-medium text-xs">
+          </div>
+
+          <div>
+            <div class="flex items-center justify-between mb-1">
+              <label class="font-bold text-zinc-300 uppercase tracking-wide">Video Description & Keywords</label>
+              <span id="publishDescCount" class="text-[10px] font-mono text-zinc-500">0/5000</span>
+            </div>
+            <textarea id="publishDescInput" rows="4" maxlength="5000" oninput="updatePublishCounts()" 
+              class="w-full bg-zinc-950 border border-zinc-800 focus:border-red-500 rounded-xl p-3 text-zinc-200 text-xs leading-relaxed font-sans"></textarea>
+          </div>
+
+          <div>
+            <label class="font-bold text-zinc-300 uppercase tracking-wide mb-1 block">Hashtags & Tags (Comma separated)</label>
+            <input type="text" id="publishTagsInput" 
+              class="w-full bg-zinc-950 border border-zinc-800 focus:border-red-500 rounded-xl px-3 py-2 text-zinc-300 font-mono text-xs">
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="font-bold text-zinc-300 uppercase tracking-wide mb-1 block">Privacy Setting</label>
+              <select id="publishPrivacySelect" class="w-full bg-zinc-950 border border-zinc-800 focus:border-red-500 rounded-xl px-3 py-2 text-white text-xs cursor-pointer">
+                <option value="public" selected>🌐 Public (Live on Shorts Feed)</option>
+                <option value="unlisted">🔗 Unlisted (Anyone with link)</option>
+                <option value="private">🔒 Private (Studio Draft)</option>
+              </select>
+            </div>
+            <div>
+              <label class="font-bold text-zinc-300 uppercase tracking-wide mb-1 block">Category</label>
+              <select id="publishCategorySelect" class="w-full bg-zinc-950 border border-zinc-800 focus:border-red-500 rounded-xl px-3 py-2 text-white text-xs cursor-pointer">
+                <option value="24" selected>Entertainment</option>
+                <option value="20">Gaming</option>
+                <option value="22">People & Blogs</option>
+                <option value="23">Comedy</option>
+                <option value="28">Science & Technology</option>
+                <option value="27">Education</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Progress Container (Shown during upload) -->
+        <div id="publishProgressContainer" class="hidden p-4 rounded-xl bg-zinc-950 border border-red-950/80 space-y-2">
+          <div class="flex items-center justify-between text-xs">
+            <span id="publishProgressMsg" class="font-bold text-zinc-200 flex items-center space-x-1.5">
+              <i class="fa-solid fa-spinner fa-spin text-red-500 mr-1"></i>
+              <span>Uploading to YouTube Studio...</span>
+            </span>
+            <span id="publishProgressPct" class="font-mono text-red-400 font-bold">0%</span>
+          </div>
+          <div class="w-full bg-zinc-900 rounded-full h-2.5 overflow-hidden border border-zinc-800 shadow-inner">
+            <div id="publishProgressBar" class="bg-gradient-to-r from-red-600 via-rose-500 to-emerald-400 h-2.5 rounded-full transition-all duration-300 w-0"></div>
+          </div>
+        </div>
+
+        <!-- Success Result Container -->
+        <div id="publishSuccessContainer" class="hidden p-4 rounded-xl bg-emerald-950/40 border border-emerald-800/80 space-y-3 text-center">
+          <div class="w-12 h-12 rounded-full bg-emerald-600/20 text-emerald-400 flex items-center justify-center mx-auto text-xl border border-emerald-500/40">
+            <i class="fa-solid fa-check"></i>
+          </div>
+          <div class="text-sm font-bold text-white">Short Published Successfully!</div>
+          <p class="text-xs text-zinc-300">Your vertical short is now live in YouTube Studio.</p>
+          <div class="pt-1 flex items-center justify-center space-x-2">
+            <a id="publishViewShortBtn" href="#" target="_blank" class="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs shadow-lg shadow-red-600/30 flex items-center space-x-1.5">
+              <i class="fa-brands fa-youtube"></i>
+              <span>View Short on YouTube</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="border-t border-zinc-800 pt-3 flex items-center justify-between">
+          <button type="button" onclick="closePublishModal()" class="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer">
+            Close
+          </button>
+          <button id="publishSubmitBtn" type="button" onclick="submitPublishToYouTube()" class="bg-gradient-to-r from-red-600 via-rose-600 to-red-600 hover:from-red-500 hover:to-rose-500 text-white px-5 py-2.5 rounded-xl text-xs font-bold shadow-lg shadow-red-600/30 flex items-center space-x-2 transition-all active:scale-[0.98] cursor-pointer">
+            <i class="fa-brands fa-youtube text-sm"></i>
+            <span>Upload Short to YouTube</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
   </main>
 
   <footer class="border-t border-zinc-800/80 py-4 text-center text-xs text-zinc-500">
@@ -2244,6 +2686,437 @@ HTML_PAGE = """<!DOCTYPE html>
 
     function closeDoctorModal() {
       document.getElementById('doctorModal').classList.add('hidden');
+    }
+
+    // ==========================================
+    // YouTube Studio Connector & Shorts Publisher
+    // ==========================================
+    let currentYouTubeStatus = { connected: false };
+    let currentPublishPayload = null;
+    let publishPollTimer = null;
+
+    async function checkYouTubeStatus() {
+      try {
+        const res = await fetch('/api/youtube/status');
+        const data = await res.json();
+        currentYouTubeStatus = data;
+        updateYouTubeUI(data);
+      } catch (e) {
+        console.error('Error fetching YouTube status:', e);
+      }
+    }
+
+    function updateYouTubeUI(st) {
+      const btn = document.getElementById('ytConnectBtn');
+      const label = document.getElementById('ytBtnLabel');
+      const connSec = document.getElementById('ytConnectedSection');
+      const disconnSec = document.getElementById('ytDisconnectedSection');
+      const secretsStatus = document.getElementById('ytSecretsStatus');
+      const pubHint = document.getElementById('publishChannelHint');
+
+      if (st && st.connected && st.channel && !st.channel.error) {
+        const ch = st.channel;
+        if (btn) {
+          btn.className = 'px-3.5 py-1.5 rounded-full text-xs font-semibold border border-emerald-700/60 bg-emerald-950/40 text-emerald-300 hover:bg-emerald-900/60 transition-all flex items-center space-x-2 cursor-pointer shadow-sm';
+        }
+        if (label) {
+          label.innerHTML = `
+            <span class="w-2 h-2 rounded-full bg-emerald-400 inline-block mr-1"></span>
+            <span>${escapeHtml(ch.title || 'YouTube Connected')}</span>
+          `;
+        }
+
+        if (connSec) connSec.classList.remove('hidden');
+        if (disconnSec) disconnSec.classList.add('hidden');
+
+        const avatarEl = document.getElementById('ytChannelAvatar');
+        if (avatarEl) {
+          if (ch.avatar) {
+            avatarEl.src = ch.avatar;
+            avatarEl.classList.remove('hidden');
+          } else {
+            avatarEl.src = 'https://www.youtube.com/s/desktop/f6b21697/img/favicon_144x144.png';
+          }
+        }
+        const titleEl = document.getElementById('ytChannelTitle');
+        if (titleEl) titleEl.textContent = ch.title || 'YouTube Studio Channel';
+        const handleEl = document.getElementById('ytChannelHandle');
+        if (handleEl) handleEl.textContent = ch.custom_url || (ch.id ? `Channel ID: ${ch.id}` : '@channel');
+        const subEl = document.getElementById('ytSubCount');
+        if (subEl) subEl.textContent = Number(ch.subscribers || 0).toLocaleString();
+        const vidEl = document.getElementById('ytVideoCount');
+        if (vidEl) vidEl.textContent = Number(ch.videos || 0).toLocaleString();
+
+        if (pubHint) pubHint.textContent = `Target Channel: ${ch.title} (${ch.custom_url || ''})`;
+      } else {
+        if (btn) {
+          btn.className = 'px-3.5 py-1.5 rounded-full text-xs font-semibold border border-red-900/60 bg-red-950/40 text-red-300 hover:bg-red-900/60 hover:text-white transition-all flex items-center space-x-2 cursor-pointer shadow-sm';
+        }
+        if (label) {
+          label.textContent = 'Connect YouTube Studio';
+        }
+
+        if (connSec) connSec.classList.add('hidden');
+        if (disconnSec) disconnSec.classList.remove('hidden');
+
+        if (secretsStatus) {
+          if (st && st.has_client_secrets) {
+            secretsStatus.className = 'text-[10px] px-2 py-0.5 rounded-full font-mono font-bold bg-emerald-950 text-emerald-300 border border-emerald-800';
+            secretsStatus.textContent = 'Secrets Configured ✓';
+          } else {
+            secretsStatus.className = 'text-[10px] px-2 py-0.5 rounded-full font-mono font-bold bg-zinc-900 text-zinc-400 border border-zinc-800';
+            secretsStatus.textContent = 'Secrets Missing';
+          }
+        }
+
+        if (pubHint) pubHint.innerHTML = `<span class="text-amber-400 font-bold">⚠️ YouTube not connected.</span> <a href="javascript:void(0)" onclick="closePublishModal(); openYouTubeModal();" class="text-indigo-400 underline">Connect Account</a>`;
+      }
+    }
+
+    function openYouTubeModal() {
+      checkYouTubeStatus();
+      document.getElementById('youtubeModal').classList.remove('hidden');
+    }
+
+    function closeYouTubeModal() {
+      document.getElementById('youtubeModal').classList.add('hidden');
+    }
+
+    function handleSecretsFileSelected(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async function(e) {
+        try {
+          const content = e.target.result;
+          document.getElementById('ytSecretsText').value = content;
+          await saveOAuthSecretsData(content);
+        } catch (err) {
+          alert('Error reading client secrets file: ' + err.message);
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    async function saveOAuthSecrets() {
+      const text = document.getElementById('ytSecretsText').value.trim();
+      if (!text) {
+        alert('Please paste client_secrets.json content or upload the JSON file.');
+        return;
+      }
+      await saveOAuthSecretsData(text);
+    }
+
+    async function saveOAuthSecretsData(jsonString) {
+      try {
+        let parsed;
+        try {
+          parsed = JSON.parse(jsonString);
+        } catch (err) {
+          alert('Invalid JSON formatting. Please check your credentials syntax.');
+          return;
+        }
+
+        const res = await fetch('/api/youtube/save-secrets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_secrets: parsed })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          alert('✓ Google Cloud OAuth credentials saved successfully! Now click Step 2 to sign in.');
+          checkYouTubeStatus();
+        } else {
+          alert('Failed to save client secrets: ' + (data.error || 'Unknown error'));
+        }
+      } catch (e) {
+        alert('Network error saving secrets: ' + e.message);
+      }
+    }
+
+    async function startYouTubeOAuthFlow() {
+      const btn = document.getElementById('ytAuthLaunchBtn');
+      const msg = document.getElementById('ytAuthStatusMsg');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i><span>Opening Google Sign-in...</span>';
+      }
+      if (msg) {
+        msg.classList.remove('hidden');
+        msg.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin text-red-500 mr-1.5"></i> Awaiting Google sign-in in your browser...';
+      }
+
+      try {
+        const res = await fetch('/api/youtube/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        const data = await res.json();
+        if (data.error) {
+          if (msg) msg.innerHTML = `<span class="text-red-400 font-bold">Error: ${escapeHtml(data.error)}</span>`;
+          if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa-brands fa-google text-sm mr-1"></i><span>Retry Sign in with Google</span>';
+          }
+          return;
+        }
+
+        // Poll for connection completion
+        let attempts = 0;
+        const pollConn = setInterval(async () => {
+          attempts++;
+          const checkRes = await fetch('/api/youtube/status');
+          const checkData = await checkRes.json();
+          if (checkData.connected) {
+            clearInterval(pollConn);
+            if (msg) msg.innerHTML = '<span class="text-emerald-400 font-bold">✓ Successfully connected to YouTube Studio!</span>';
+            if (btn) {
+              btn.disabled = false;
+              btn.innerHTML = '<i class="fa-brands fa-google text-sm mr-1"></i><span>Connected</span>';
+            }
+            updateYouTubeUI(checkData);
+          } else if (attempts >= 45) { // 90 seconds timeout
+            clearInterval(pollConn);
+            if (msg) msg.innerHTML = '<span class="text-amber-400">Authentication timed out. Please try again.</span>';
+            if (btn) {
+              btn.disabled = false;
+              btn.innerHTML = '<i class="fa-brands fa-google text-sm mr-1"></i><span>Sign in with Google & Connect YouTube</span>';
+            }
+          }
+        }, 2000);
+      } catch (e) {
+        if (msg) msg.innerHTML = `<span class="text-red-400">Connection error: ${e.message}</span>`;
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fa-brands fa-google text-sm mr-1"></i><span>Sign in with Google & Connect YouTube</span>';
+        }
+      }
+    }
+
+    async function saveDirectTokenJson() {
+      const text = document.getElementById('ytTokenJsonInput').value.trim();
+      if (!text) {
+        alert('Please paste valid token JSON');
+        return;
+      }
+      try {
+        const tokenObj = JSON.parse(text);
+        const res = await fetch('/api/youtube/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token_json: tokenObj })
+        });
+        const data = await res.json();
+        if (data.success && data.status && data.status.connected) {
+          alert('✓ Token saved and YouTube Studio connected!');
+          checkYouTubeStatus();
+        } else {
+          alert('Invalid token or connection failed: ' + (data.status?.error || 'Unknown error'));
+        }
+      } catch (e) {
+        alert('Error parsing token JSON: ' + e.message);
+      }
+    }
+
+    async function disconnectYouTube() {
+      if (!confirm('Are you sure you want to disconnect YouTube Studio?')) return;
+      try {
+        const res = await fetch('/api/youtube/disconnect', { method: 'POST' });
+        const data = await res.json();
+        alert('YouTube Studio disconnected.');
+        checkYouTubeStatus();
+      } catch (e) {
+        alert('Error disconnecting: ' + e.message);
+      }
+    }
+
+    // ==========================================
+    // Publish Short Modal & Upload Actions
+    // ==========================================
+    function openPublishModal(filename, title, tags, hook, folder, timestamps) {
+      if (!currentYouTubeStatus.connected) {
+        if (confirm('YouTube Studio is not connected yet! Would you like to connect your channel now?')) {
+          openYouTubeModal();
+          return;
+        }
+      }
+
+      currentPublishPayload = {
+        filename: filename,
+        folder: folder || 'final',
+        hook: hook || '',
+        timestamps: timestamps || ''
+      };
+
+      document.getElementById('publishFilename').textContent = filename;
+      document.getElementById('publishFolderBadge').textContent = folder || 'final';
+      document.getElementById('publishDuration').textContent = timestamps ? `1080x1920 60 FPS • ${timestamps}` : '1080x1920 60 FPS • Vertical Short';
+
+      // Auto-format title with #Shorts
+      let cleanTitle = (title || 'Viral Highlight').trim();
+      if (!cleanTitle.toLowerCase().includes('#shorts')) {
+        if (cleanTitle.length <= 90) cleanTitle += ' #Shorts';
+      }
+      document.getElementById('publishTitleInput').value = cleanTitle.substring(0, 100);
+
+      // Description with hook, parent video title, and hashtags
+      let cleanTags = (tags || '#Shorts #Viral #Trending').trim();
+      let parentTitle = window.__sourceTitle || '';
+      let desc = `${cleanTitle}\n\n`;
+      if (hook) desc += `🔥 Hook: "${hook}"\n`;
+      if (parentTitle) desc += `📺 Source Video: ${parentTitle}\n`;
+      if (timestamps) desc += `⏱️ Clip Range: ${timestamps}\n`;
+      desc += `\nSubtitles: 60 FPS Animated Karaoke Subtitles\nResolution: 1080x1920 (9:16 Shorts / Reels / TikTok)\n\n${cleanTags}`;
+      document.getElementById('publishDescInput').value = desc.substring(0, 5000);
+
+      // Clean tags field (comma separated)
+      const tagTokens = cleanTags.split(/[#,\\s]+/).filter(Boolean);
+      document.getElementById('publishTagsInput').value = tagTokens.join(', ');
+
+      // Reset state views
+      document.getElementById('publishProgressContainer').classList.add('hidden');
+      document.getElementById('publishSuccessContainer').classList.add('hidden');
+      const submitBtn = document.getElementById('publishSubmitBtn');
+      submitBtn.disabled = false;
+      submitBtn.classList.remove('opacity-40', 'cursor-not-allowed');
+      submitBtn.innerHTML = '<i class="fa-brands fa-youtube text-sm mr-1"></i><span>Upload Short to YouTube</span>';
+
+      updatePublishCounts();
+      updateYouTubeUI(currentYouTubeStatus);
+      document.getElementById('publishModal').classList.remove('hidden');
+    }
+
+    function closePublishModal() {
+      if (publishPollTimer) {
+        clearInterval(publishPollTimer);
+        publishPollTimer = null;
+      }
+      document.getElementById('publishModal').classList.add('hidden');
+    }
+
+    function updatePublishCounts() {
+      const tInput = document.getElementById('publishTitleInput');
+      const dInput = document.getElementById('publishDescInput');
+      const tCount = document.getElementById('publishTitleCount');
+      const dCount = document.getElementById('publishDescCount');
+
+      if (tInput && tCount) {
+        tCount.textContent = `${tInput.value.length}/100`;
+        tCount.className = tInput.value.length > 90 ? 'text-[10px] font-mono text-amber-400 font-bold' : 'text-[10px] font-mono text-zinc-500';
+      }
+      if (dInput && dCount) {
+        dCount.textContent = `${dInput.value.length}/5000`;
+      }
+    }
+
+    async function submitPublishToYouTube() {
+      if (!currentPublishPayload) return;
+      if (!currentYouTubeStatus.connected) {
+        alert('Please connect your YouTube Studio account first!');
+        openYouTubeModal();
+        return;
+      }
+
+      const title = document.getElementById('publishTitleInput').value.trim();
+      const description = document.getElementById('publishDescInput').value.trim();
+      const tagsRaw = document.getElementById('publishTagsInput').value.trim();
+      const privacy = document.getElementById('publishPrivacySelect').value;
+      const categoryId = document.getElementById('publishCategorySelect').value;
+
+      if (!title) {
+        alert('Please provide a title for the YouTube Short.');
+        return;
+      }
+
+      const submitBtn = document.getElementById('publishSubmitBtn');
+      const progBox = document.getElementById('publishProgressContainer');
+      const progBar = document.getElementById('publishProgressBar');
+      const progMsg = document.getElementById('publishProgressMsg');
+      const progPct = document.getElementById('publishProgressPct');
+      const succBox = document.getElementById('publishSuccessContainer');
+
+      submitBtn.disabled = true;
+      submitBtn.classList.add('opacity-40', 'cursor-not-allowed');
+      submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i><span>Publishing...</span>';
+
+      progBox.classList.remove('hidden');
+      succBox.classList.add('hidden');
+      progBar.style.width = '5%';
+      progPct.textContent = '5%';
+      progMsg.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-red-500 mr-1.5"></i> Initializing resumable 60 FPS upload...';
+
+      try {
+        const payload = {
+          filename: currentPublishPayload.filename,
+          folder: currentPublishPayload.folder,
+          title: title,
+          description: description,
+          tags: tagsRaw,
+          privacy: privacy,
+          category_id: categoryId
+        };
+
+        const res = await fetch('/api/youtube/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || 'Upload request failed');
+        }
+
+        const uploadKey = data.upload_key;
+        if (publishPollTimer) clearInterval(publishPollTimer);
+
+        publishPollTimer = setInterval(async () => {
+          try {
+            const stRes = await fetch(`/api/youtube/upload-status?key=${encodeURIComponent(uploadKey)}`);
+            const stData = await stRes.json();
+
+            if (stData.status === 'uploading') {
+              const p = Math.max(5, Math.min(99, stData.progress || 10));
+              progBar.style.width = `${p}%`;
+              progPct.textContent = `${p.toFixed(0)}%`;
+              progMsg.innerHTML = `<i class="fa-solid fa-cloud-arrow-up text-red-500 mr-1.5 animate-pulse"></i> ${escapeHtml(stData.message || 'Uploading chunks to YouTube...')}`;
+            } else if (stData.status === 'completed') {
+              clearInterval(publishPollTimer);
+              publishPollTimer = null;
+              progBar.style.width = '100%';
+              progPct.textContent = '100%';
+              progBox.classList.add('hidden');
+              succBox.classList.remove('hidden');
+
+              const viewBtn = document.getElementById('publishViewShortBtn');
+              if (viewBtn && stData.url) {
+                viewBtn.href = stData.url;
+              }
+
+              submitBtn.disabled = false;
+              submitBtn.classList.remove('opacity-40', 'cursor-not-allowed');
+              submitBtn.innerHTML = '<i class="fa-solid fa-check mr-1"></i><span>Uploaded ✓</span>';
+            } else if (stData.status === 'error') {
+              clearInterval(publishPollTimer);
+              publishPollTimer = null;
+              progBox.classList.add('hidden');
+              submitBtn.disabled = false;
+              submitBtn.classList.remove('opacity-40', 'cursor-not-allowed');
+              submitBtn.innerHTML = '<i class="fa-brands fa-youtube text-sm mr-1"></i><span>Retry Upload</span>';
+              alert('YouTube Upload Error: ' + (stData.error || stData.message));
+            }
+          } catch (pollErr) {
+            console.error('Upload poll error:', pollErr);
+          }
+        }, 1200);
+
+      } catch (err) {
+        progBox.classList.add('hidden');
+        submitBtn.disabled = false;
+        submitBtn.classList.remove('opacity-40', 'cursor-not-allowed');
+        submitBtn.innerHTML = '<i class="fa-brands fa-youtube text-sm mr-1"></i><span>Upload Short to YouTube</span>';
+        alert('Failed to start YouTube upload: ' + err.message);
+      }
     }
 
     async function scanVideo() {
@@ -3062,8 +3935,15 @@ HTML_PAGE = """<!DOCTYPE html>
               </div>
             </div>
 
-            <div class="pt-1">
+            <div class="pt-1 flex flex-col space-y-2">
               ${approveBtn}
+              ${(isReady && !d.approved) ? `
+                <button onclick="openPublishModal('${d.filename}', document.getElementById('title_${d.id}') ? document.getElementById('title_${d.id}').value : '', document.getElementById('tags_${d.id}') ? document.getElementById('tags_${d.id}').value : '', '${escapeHtml(d.hook || '')}', 'draft', '${d.start.toFixed(1)}s - ${d.end.toFixed(1)}s')"
+                  class="w-full bg-zinc-900 hover:bg-red-950/60 border border-zinc-800 hover:border-red-700/60 text-zinc-300 hover:text-red-300 text-xs py-2 rounded-xl font-semibold flex items-center justify-center space-x-2 transition-all cursor-pointer">
+                  <i class="fa-brands fa-youtube text-red-500 text-sm"></i>
+                  <span>Publish Draft to YouTube</span>
+                </button>
+              ` : ''}
             </div>
           </div>
         `;
@@ -3196,15 +4076,22 @@ HTML_PAGE = """<!DOCTYPE html>
               <div class="text-[10px] text-zinc-400 font-mono pt-1 ${a.hook ? '' : 'border-t border-zinc-800'}">${escapeHtml(a.timestamps || '1080x1920 60 FPS')}</div>
             </div>
 
-            <div class="flex space-x-2 pt-1">
-              <a href="/media/final/${a.filename}" download="${a.filename}" 
-                class="flex-1 text-center bg-zinc-800 hover:bg-zinc-700 text-white text-xs py-2 rounded-lg font-semibold transition-all">
-                <i class="fa-solid fa-download mr-1"></i> Download MP4
-              </a>
-              <button onclick="copyMetadata('${escapeHtml(a.title)}', '${escapeHtml(a.hashtags)}')"
-                class="px-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs py-2 rounded-lg transition-all cursor-pointer" title="Copy Title & Tags">
-                <i class="fa-regular fa-copy"></i>
+            <div class="flex flex-col space-y-2 pt-1">
+              <button onclick="openPublishModal('${a.filename}', '${escapeHtml(a.title)}', '${escapeHtml(a.hashtags)}', '${escapeHtml(a.hook || '')}', 'final', '${escapeHtml(a.timestamps || '')}')" 
+                class="w-full bg-gradient-to-r from-red-600 via-rose-600 to-red-600 hover:from-red-500 hover:to-rose-500 text-white text-xs py-2.5 rounded-xl font-bold shadow-lg shadow-red-600/30 flex items-center justify-center space-x-2 transition-all active:scale-[0.98] cursor-pointer">
+                <i class="fa-brands fa-youtube text-sm"></i>
+                <span>Publish to YouTube Studio</span>
               </button>
+              <div class="flex space-x-2">
+                <a href="/media/final/${a.filename}" download="${a.filename}" 
+                  class="flex-1 text-center bg-zinc-800 hover:bg-zinc-700 text-white text-xs py-2 rounded-lg font-semibold transition-all">
+                  <i class="fa-solid fa-download mr-1"></i> Download MP4
+                </a>
+                <button onclick="copyMetadata('${escapeHtml(a.title)}', '${escapeHtml(a.hashtags)}')"
+                  class="px-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs py-2 rounded-lg transition-all cursor-pointer" title="Copy Title & Tags">
+                  <i class="fa-regular fa-copy"></i>
+                </button>
+              </div>
             </div>
           </div>
         `;
@@ -3302,6 +4189,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
     initSourcePlayerListeners();
     startPolling();
+    checkYouTubeStatus();
   </script>
 </body>
 </html>
