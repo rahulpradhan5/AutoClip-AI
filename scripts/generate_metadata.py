@@ -395,3 +395,184 @@ def generate_clip_metadata(text: str, hook: str, index: int = 1, variation: int 
     title = generate_live_viral_title(text, hook, index, variation, video_title=video_title)
     hashtags = " ".join(get_live_trending_hashtags(text, hook, variation, video_title=video_title))
     return title, hashtags
+
+
+def crawl_youtube_trending_keywords(core_topic: str, clip_action: str = "", count: int = 12) -> List[str]:
+    """
+    Crawls YouTube search autocomplete for real user search queries in this niche.
+    """
+    keywords = []
+    queries_to_crawl = []
+    if core_topic:
+        if clip_action:
+            queries_to_crawl.append(f"{core_topic} {clip_action}")
+        queries_to_crawl.append(f"{core_topic} shorts")
+        queries_to_crawl.append(f"{core_topic} gameplay")
+        queries_to_crawl.append(f"{core_topic} viral")
+        queries_to_crawl.append(core_topic)
+    elif clip_action:
+        queries_to_crawl.append(f"{clip_action} viral shorts")
+        queries_to_crawl.append(clip_action)
+
+    for q in queries_to_crawl:
+        suggestions = fetch_youtube_suggestions(q)
+        for s in suggestions:
+            clean_s = s.strip().lower()
+            if clean_s and clean_s not in keywords and len(clean_s) >= 4:
+                keywords.append(clean_s)
+            if len(keywords) >= count:
+                break
+        if len(keywords) >= count:
+            break
+
+    # Fallbacks if offline
+    if len(keywords) < 6:
+        base = (core_topic or "gaming").lower()
+        defaults = [
+            f"{base} shorts",
+            f"{base} viral moments",
+            f"{base} gameplay 60fps",
+            f"{base} best scenes",
+            f"{base} funny fails",
+            f"{base} high stakes",
+            "shorts",
+            "viral clips",
+            "trending moments"
+        ]
+        for d in defaults:
+            if d not in keywords:
+                keywords.append(d)
+
+    return keywords[:count]
+
+
+def generate_seo_description(
+    text: str,
+    hook: str,
+    title: str = "",
+    video_title: str = "",
+    timestamps: str = "",
+    variation: int = 0
+) -> Tuple[str, List[str]]:
+    """
+    Generates a full YouTube SEO description strictly optimized for YouTube's algorithm:
+    - Crucial keywords and search queries positioned within the FIRST 200 CHARACTERS
+      (above the YouTube 'Show More' fold and prioritized for search indexing).
+    - Opening hook line & clip context.
+    - Scene timestamps and source attribution.
+    - Real crawled YouTube trending search terms / tags.
+    - Curated niche hashtags.
+    """
+    if not video_title:
+        video_title = get_cached_video_title()
+
+    core_topic = clean_video_topic(video_title)
+    text_clean = clean_text(text)
+    hook_clean = clean_text(hook)
+    t_lower = text_clean.lower()
+
+    # Determine clip action/event
+    clip_event = ""
+    event_keywords = ""
+    if re.search(r"\b(car|stole|steal|driving|keys)\b", t_lower):
+        clip_event = "car heist & escape"
+        event_keywords = "car theft, police pursuit, high-speed driving"
+    elif re.search(r"\b(chase|police|cops|arrest|sirens)\b", t_lower):
+        clip_event = "police encounter"
+        event_keywords = "cops sirens, escape route, wanted level"
+    elif re.search(r"\b(lucia|jason)\b", t_lower):
+        clip_event = "Lucia & Jason story scene"
+        event_keywords = "Lucia and Jason dialogue, Vice City lore, story cutscene"
+    elif re.search(r"\b(money|cash|dollars|paid|grant)\b", t_lower):
+        clip_event = "high-stakes robbery payout"
+        event_keywords = "cash payout, big score, high-stakes job"
+    elif re.search(r"\b(kiss|rizz|date|girlfriend|boyfriend)\b", t_lower):
+        clip_event = "unbelievable flirting scene"
+        event_keywords = "rizz moments, romance drama, epic dialogue"
+    elif re.search(r"\b(die|dead|killed|boss|fight)\b", t_lower):
+        clip_event = "intense climax shootout"
+        event_keywords = "combat action, shootout scene, final climax"
+    else:
+        first_few = " ".join([w for w in text_clean.split() if w.lower() not in STOP_WORDS][:4])
+        clip_event = f"intense viral scene ({first_few})" if first_few else "epic viral highlight"
+        event_keywords = "viral moments, trending clips, epic scenes"
+
+    # Crawl live keywords
+    crawled_keywords = crawl_youtube_trending_keywords(core_topic, clip_event, count=12)
+
+    # CRAFT THE FIRST 200 CHARACTERS (Crucial for YouTube SEO Algorithm):
+    topic_label = core_topic if core_topic else "Gaming"
+    
+    first_200_variants = [
+        f"Watch this intense {topic_label} moment featuring {clip_event}! Top {topic_label} gameplay clips, viral cutscenes, and high-stakes {event_keywords[:35]} in Ultra-HD 60 FPS.",
+        f"Unbelievable {topic_label} scene: {clip_event}! Catch the best {topic_label} viral shorts, intense {event_keywords[:30]}, and trending moments with 60 FPS animated karaoke captions.",
+        f"Did this really happen in {topic_label}?! Epic {clip_event} breakdown. Discover trending {topic_label} gameplay, crazy scenes, and viral video highlights in 1080x1920 60 FPS.",
+        f"The most intense {topic_label} moment yet! High-octane {clip_event} with {event_keywords[:40]}. Explore official {topic_label} viral highlights and clutch clips.",
+    ]
+
+    lead_paragraph = first_200_variants[variation % len(first_200_variants)]
+    if len(lead_paragraph) > 195:
+        lead_paragraph = lead_paragraph[:192].rsplit(" ", 1)[0] + "..."
+
+    # Extract 5 trending hashtags
+    tags_list = get_live_trending_hashtags(text, hook, variation, video_title=video_title)
+    hashtags_str = " ".join(tags_list)
+
+    # Format keywords as comma-separated tags
+    keywords_str = ", ".join(crawled_keywords)
+
+    description = (
+        f"{lead_paragraph}\n\n"
+        f"🔥 KEY MOMENT / HOOK:\n"
+        f"\"{hook_clean}\"\n\n"
+        f"⏱️ SCENE TIMESTAMPS: {timestamps or 'Full Highlight'}\n"
+        f"📺 SOURCE VIDEO: {video_title or topic_label}\n"
+        f"⚡ FORMAT: 1080x1920 60 FPS Vertical Short (Lanczos4 Sharpness • AI Subject Tracking • Animated Subtitles)\n\n"
+        f"🔍 TRENDING SEARCH KEYWORDS & TOPICS:\n"
+        f"{keywords_str}\n\n"
+        f"🏷️ HASHTAGS:\n"
+        f"{hashtags_str} #Shorts #Viral #Trending"
+    )
+
+    return description, crawled_keywords
+
+
+def generate_clip_metadata_full(
+    text: str,
+    hook: str,
+    index: int = 1,
+    variation: int = 0,
+    video_title: str = "",
+    timestamps: str = ""
+) -> dict:
+    """
+    Full comprehensive metadata generator performing real-time YouTube research.
+    Returns title, hashtags, SEO description (with keywords in first 200 chars), and search keywords.
+    """
+    if not video_title:
+        video_title = get_cached_video_title()
+
+    title = generate_live_viral_title(text, hook, index, variation, video_title=video_title)
+    hashtags_list = get_live_trending_hashtags(text, hook, variation, video_title=video_title)
+    hashtags = " ".join(hashtags_list)
+    description, keywords = generate_seo_description(
+        text=text,
+        hook=hook,
+        title=title,
+        video_title=video_title,
+        timestamps=timestamps,
+        variation=variation
+    )
+
+    first_200 = description[:200]
+
+    return {
+        "title": title,
+        "hashtags": hashtags,
+        "hashtags_list": hashtags_list,
+        "description": description,
+        "first_200": first_200,
+        "keywords": keywords,
+        "variation": variation
+    }
+

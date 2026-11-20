@@ -36,10 +36,18 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 try:
-    from generate_metadata import generate_clip_metadata
+    from generate_metadata import generate_clip_metadata, generate_clip_metadata_full, generate_seo_description
 except ImportError:
-    def generate_clip_metadata(text, hook, idx=1, variation=0):
+    def generate_clip_metadata(text, hook, idx=1, variation=0, video_title=""):
         return f"Viral Moment #{idx} 🤯", "#Shorts #Viral #Trending #HighStakes #FYP"
+    def generate_clip_metadata_full(text, hook, idx=1, variation=0, video_title="", timestamps=""):
+        return {
+            "title": f"Viral Moment #{idx} 🤯",
+            "hashtags": "#Shorts #Viral #Trending",
+            "description": f"Watch this viral moment!\n\n#Shorts #Viral",
+            "first_200": "Watch this viral moment!",
+            "keywords": ["shorts", "viral", "trending"]
+        }
 
 try:
     import youtube_uploader
@@ -223,6 +231,38 @@ def generate_thumbnail(video_path: Path, thumb_path: Path) -> bool:
         print(f"Error generating thumbnail for {video_path}: {e}")
     return False
 
+def save_clip_metadata_file(
+    txt_path: Path,
+    clip_num,
+    filename: str,
+    timestamps: str,
+    hook: str,
+    framing: str,
+    title: str,
+    hashtags: str,
+    description: str,
+    keywords
+):
+    """Writes standardized metadata with SEO-optimized description & keywords to disk."""
+    kw_str = ", ".join(keywords) if isinstance(keywords, list) else str(keywords or "")
+    content = (
+        f"==================================================\n"
+        f"APPROVED VIRAL CLIP #{clip_num}\n"
+        f"==================================================\n"
+        f"File: {filename}\n"
+        f"Timestamps: {timestamps}\n"
+        f"Opening Hook Line: \"{hook}\"\n"
+        f"Framing: {framing}\n"
+        f"Viral Title: {title}\n"
+        f"Hashtags: {hashtags}\n"
+        f"Keywords: {kw_str}\n\n"
+        f"Description:\n"
+        f"{description}\n"
+        f"==================================================\n"
+    )
+    txt_path.write_text(content, encoding="utf-8")
+
+
 def refresh_approved_clips():
     approved = []
     if FINAL_DIR.exists():
@@ -240,6 +280,8 @@ def refresh_approved_clips():
             hook = ""
             timestamps = ""
             framing = "1080x1920 60 FPS (Lanczos4 + Color Graded)"
+            description = ""
+            keywords = []
 
             if not thumb_file.exists() or thumb_file.stat().st_size == 0:
                 generate_thumbnail(mp4, thumb_file)
@@ -247,6 +289,9 @@ def refresh_approved_clips():
             if txt_file.exists():
                 try:
                     content = txt_file.read_text(encoding="utf-8")
+                    if "\nDescription:\n" in content:
+                        parts = content.split("\nDescription:\n", 1)[1]
+                        description = parts.split("==================================================", 1)[0].strip()
                     for line in content.splitlines():
                         if line.startswith("Viral Title:"):
                             title = line.split(":", 1)[1].strip()
@@ -258,8 +303,29 @@ def refresh_approved_clips():
                             timestamps = line.split(":", 1)[1].strip()
                         elif line.startswith("Framing:"):
                             framing = line.split(":", 1)[1].strip()
+                        elif line.startswith("Keywords:"):
+                            kw_str = line.split(":", 1)[1].strip()
+                            keywords = [k.strip() for k in kw_str.split(",") if k.strip()]
+                        elif line.startswith("Description:") and not description:
+                            description = line.split(":", 1)[1].strip()
                 except Exception:
                     pass
+
+            if not description:
+                try:
+                    meta_full = generate_clip_metadata_full(
+                        text=hook or title,
+                        hook=hook,
+                        index=clip_num,
+                        variation=0,
+                        video_title=getattr(state, "source_title", ""),
+                        timestamps=timestamps
+                    )
+                    description = meta_full.get("description", "")
+                    if not keywords:
+                        keywords = meta_full.get("keywords", [])
+                except Exception:
+                    description = f"Watch this viral {title} highlight!\n\n{hashtags}"
 
             approved.append({
                 "id": base_name,
@@ -267,6 +333,9 @@ def refresh_approved_clips():
                 "filename": mp4.name,
                 "title": title,
                 "hashtags": hashtags,
+                "description": description,
+                "first_200": description[:200] if description else "",
+                "keywords": keywords,
                 "hook": hook,
                 "timestamps": timestamps,
                 "framing": framing,
@@ -1047,13 +1116,16 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(resp_bytes)
             return
 
-        # Step 3: Regenerate metadata for a clip on-demand
+        # Step 3: Regenerate metadata for a clip on-demand (Drafts or Final Approved Clips)
         if path == "/api/regenerate-metadata":
             try:
                 data = json.loads(body) if body else {}
                 text = data.get("text", "")
                 hook = data.get("hook", "")
-                clip_id = int(data.get("id", 1))
+                raw_id = data.get("id", 1)
+                filename = data.get("filename", "")
+                is_final = bool(data.get("is_final", False)) or bool(filename)
+                timestamps = data.get("timestamps", "")
                 variation = int(data.get("variation", 0)) + 1
                 v_title = data.get("video_title") or getattr(state, "source_title", "")
                 if not v_title and (TEMP_DIR / "source_title.txt").exists():
@@ -1062,15 +1134,97 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
                     except Exception:
                         pass
             except Exception:
-                text, hook, clip_id, variation, v_title = "", "", 1, 1, ""
+                text, hook, raw_id, filename, is_final, timestamps, variation, v_title = "", "", 1, "", False, "", 1, ""
 
-            new_title, new_hashtags = generate_clip_metadata(text, hook, clip_id, variation, video_title=v_title)
+            try:
+                clip_idx = int(str(raw_id).replace("clip_", "")) if str(raw_id).replace("clip_", "").isdigit() else 1
+            except Exception:
+                clip_idx = 1
+
+            meta_full = generate_clip_metadata_full(
+                text=text or hook,
+                hook=hook,
+                index=clip_idx,
+                variation=variation,
+                video_title=v_title,
+                timestamps=timestamps
+            )
+
+            if is_final:
+                target_fname = filename or f"clip_{clip_idx}.mp4"
+                base_name = Path(target_fname).stem
+                txt_path = FINAL_DIR / f"{base_name}.txt"
+                save_clip_metadata_file(
+                    txt_path=txt_path,
+                    clip_num=clip_idx,
+                    filename=target_fname,
+                    timestamps=timestamps,
+                    hook=hook,
+                    framing="1080x1920 60 FPS (Lanczos4 + Color Graded)",
+                    title=meta_full["title"],
+                    hashtags=meta_full["hashtags"],
+                    description=meta_full["description"],
+                    keywords=meta_full["keywords"]
+                )
+                refresh_approved_clips()
+                state.log(f"✨ [YouTube SEO] Regenerated Title, Keywords & 200-char Description for {target_fname}.")
 
             resp_bytes = json.dumps({
-                "title": new_title,
-                "hashtags": new_hashtags,
+                "title": meta_full["title"],
+                "hashtags": meta_full["hashtags"],
+                "description": meta_full["description"],
+                "first_200": meta_full["first_200"],
+                "keywords": meta_full["keywords"],
                 "variation": variation
             }).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp_bytes)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(resp_bytes)
+            return
+
+        # Save custom edited metadata for a final clip
+        if path == "/api/save-clip-metadata":
+            try:
+                data = json.loads(body) if body else {}
+                filename = data.get("filename", "")
+                title = data.get("title", "")
+                hashtags = data.get("hashtags", "")
+                description = data.get("description", "")
+                hook = data.get("hook", "")
+                timestamps = data.get("timestamps", "")
+                raw_keywords = data.get("keywords", [])
+            except Exception as e:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid JSON")
+                return
+
+            if not filename:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Filename is required")
+                return
+
+            base_name = Path(filename).stem
+            txt_path = FINAL_DIR / f"{base_name}.txt"
+            m = re.search(r"clip_(\d+)", base_name)
+            clip_idx = int(m.group(1)) if m else 1
+
+            save_clip_metadata_file(
+                txt_path=txt_path,
+                clip_num=clip_idx,
+                filename=filename,
+                timestamps=timestamps,
+                hook=hook,
+                framing="1080x1920 60 FPS (Lanczos4 + Color Graded)",
+                title=title,
+                hashtags=hashtags,
+                description=description,
+                keywords=raw_keywords
+            )
+            refresh_approved_clips()
+            state.log(f"💾 Saved updated metadata for final_clips/{filename}.")
+
+            resp_bytes = json.dumps({"success": True, "filename": filename}).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(resp_bytes)))
@@ -1114,19 +1268,27 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
                 timestamps = f"{draft_info['start']:.2f}s - {draft_info['end']:.2f}s ({draft_info['duration']:.1f}s)" if draft_info else ""
                 framing = draft_info.get("framing", "1080x1920 60 FPS (Lanczos4 + Color Graded)")
 
-                metadata_content = (
-                    f"==================================================\n"
-                    f"APPROVED VIRAL CLIP #{cid}\n"
-                    f"==================================================\n"
-                    f"File: clip_{cid}.mp4\n"
-                    f"Timestamps: {timestamps}\n"
-                    f"Opening Hook Line: \"{hook}\"\n"
-                    f"Framing: {framing}\n"
-                    f"Viral Title: {title}\n"
-                    f"Hashtags: {hashtags}\n"
-                    f"==================================================\n"
+                # Generate full SEO description
+                desc, kws = generate_seo_description(
+                    text=draft_info.get("full_text", hook) if draft_info else hook,
+                    hook=hook,
+                    title=title,
+                    video_title=getattr(state, "source_title", ""),
+                    timestamps=timestamps
                 )
-                txt_file.write_text(metadata_content, encoding="utf-8")
+
+                save_clip_metadata_file(
+                    txt_path=txt_file,
+                    clip_num=cid,
+                    filename=f"clip_{cid}.mp4",
+                    timestamps=timestamps,
+                    hook=hook,
+                    framing=framing,
+                    title=title,
+                    hashtags=hashtags,
+                    description=desc,
+                    keywords=kws
+                )
                 approved_count += 1
 
             state.log(f"✓ Bulk approved {approved_count} clips and moved them to final_clips/.")
@@ -1181,20 +1343,28 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
             timestamps = f"{draft_info['start']:.2f}s - {draft_info['end']:.2f}s ({draft_info['duration']:.1f}s)" if draft_info else ""
             framing = draft_info.get("framing", "1080x1920 60 FPS (Lanczos4 + Color Graded)")
 
-            metadata_content = (
-                f"==================================================\n"
-                f"APPROVED VIRAL CLIP #{clip_id}\n"
-                f"==================================================\n"
-                f"File: clip_{clip_id}.mp4\n"
-                f"Timestamps: {timestamps}\n"
-                f"Opening Hook Line: \"{hook}\"\n"
-                f"Framing: {framing}\n"
-                f"Viral Title: {title}\n"
-                f"Hashtags: {hashtags}\n"
-                f"==================================================\n"
+            # Generate full SEO description
+            desc, kws = generate_seo_description(
+                text=draft_info.get("full_text", hook) if draft_info else hook,
+                hook=hook,
+                title=title,
+                video_title=getattr(state, "source_title", ""),
+                timestamps=timestamps
             )
-            txt_file.write_text(metadata_content, encoding="utf-8")
-            state.log(f"✓ Approved Clip #{clip_id} moved to final_clips/clip_{clip_id}.mp4 and saved metadata.")
+
+            save_clip_metadata_file(
+                txt_path=txt_file,
+                clip_num=clip_id,
+                filename=f"clip_{clip_id}.mp4",
+                timestamps=timestamps,
+                hook=hook,
+                framing=framing,
+                title=title,
+                hashtags=hashtags,
+                description=desc,
+                keywords=kws
+            )
+            state.log(f"✓ Approved Clip #{clip_id} moved to final_clips/clip_{clip_id}.mp4 with SEO description.")
 
             with state.lock:
                 for d in state.draft_clips:
@@ -2934,7 +3104,7 @@ HTML_PAGE = """<!DOCTYPE html>
     // ==========================================
     // Publish Short Modal & Upload Actions
     // ==========================================
-    function openPublishModal(filename, title, tags, hook, folder, timestamps) {
+    function openPublishModal(filename, title, tags, hook, folder, timestamps, customDesc = '') {
       if (!currentYouTubeStatus.connected) {
         if (confirm('YouTube Studio is not connected yet! Would you like to connect your channel now?')) {
           openYouTubeModal();
@@ -2960,15 +3130,19 @@ HTML_PAGE = """<!DOCTYPE html>
       }
       document.getElementById('publishTitleInput').value = cleanTitle.substring(0, 100);
 
-      // Description with hook, parent video title, and hashtags
+      // Description: use full research SEO description if provided, otherwise compose
       let cleanTags = (tags || '#Shorts #Viral #Trending').trim();
-      let parentTitle = window.__sourceTitle || '';
-      let desc = `${cleanTitle}\n\n`;
-      if (hook) desc += `🔥 Hook: "${hook}"\n`;
-      if (parentTitle) desc += `📺 Source Video: ${parentTitle}\n`;
-      if (timestamps) desc += `⏱️ Clip Range: ${timestamps}\n`;
-      desc += `\nSubtitles: 60 FPS Animated Karaoke Subtitles\nResolution: 1080x1920 (9:16 Shorts / Reels / TikTok)\n\n${cleanTags}`;
-      document.getElementById('publishDescInput').value = desc.substring(0, 5000);
+      if (customDesc && customDesc.trim()) {
+        document.getElementById('publishDescInput').value = customDesc.trim().substring(0, 5000);
+      } else {
+        let parentTitle = window.__sourceTitle || '';
+        let desc = `${cleanTitle}\n\n`;
+        if (hook) desc += `🔥 Hook: "${hook}"\n`;
+        if (parentTitle) desc += `📺 Source Video: ${parentTitle}\n`;
+        if (timestamps) desc += `⏱️ Clip Range: ${timestamps}\n`;
+        desc += `\nSubtitles: 60 FPS Animated Karaoke Subtitles\nResolution: 1080x1920 (9:16 Shorts / Reels / TikTok)\n\n${cleanTags}`;
+        document.getElementById('publishDescInput').value = desc.substring(0, 5000);
+      }
 
       // Clean tags field (comma separated)
       const tagTokens = cleanTags.split(/[#,\\s]+/).filter(Boolean);
@@ -2985,6 +3159,10 @@ HTML_PAGE = """<!DOCTYPE html>
       updatePublishCounts();
       updateYouTubeUI(currentYouTubeStatus);
       document.getElementById('publishModal').classList.remove('hidden');
+    }
+
+    function openPublishModalWithData(filename, title, desc, tags, hook, folder, timestamps) {
+      openPublishModal(filename, title, tags, hook, folder, timestamps, desc);
     }
 
     function closePublishModal() {
@@ -4037,7 +4215,8 @@ HTML_PAGE = """<!DOCTYPE html>
       }
 
       const list = (approved || []).slice().sort((a, b) => getClipNum(a) - getClipNum(b));
-      const fingerprint = list.map(a => `${a.id}_${a.filename}_${a.size_mb}_${a.title}_${a.hashtags}_${a.poster}`).join('|');
+      window.__approvedClips = list;
+      const fingerprint = list.map(a => `${a.id}_${a.filename}_${a.size_mb}_${a.title}_${a.hashtags}_${(a.description || '').length}_${a.poster}`).join('|');
       if (fingerprint === lastApprovedFingerprint) {
         return;
       }
@@ -4057,10 +4236,11 @@ HTML_PAGE = """<!DOCTYPE html>
 
       container.innerHTML = list.map(a => {
         const posterAttr = a.poster ? `poster="${a.poster}"` : '';
+        const descText = a.description || '';
         return `
-          <div class="bg-zinc-950 border border-emerald-950/60 rounded-2xl p-4 shadow-xl flex flex-col space-y-3.5">
+          <div id="card_${a.id}" class="bg-zinc-950 border border-emerald-950/60 hover:border-emerald-700/60 rounded-2xl p-4 shadow-xl flex flex-col space-y-3.5 transition-all">
             <div class="flex items-center justify-between">
-              <span class="text-xs font-bold text-emerald-300">${a.filename} (${a.size_mb} MB)</span>
+              <span class="text-xs font-bold text-emerald-300 font-mono">${a.filename} (${a.size_mb} MB)</span>
               <span class="text-[10px] bg-emerald-950 text-emerald-400 px-2 py-0.5 rounded border border-emerald-800 font-semibold">Final Clip</span>
             </div>
 
@@ -4069,26 +4249,74 @@ HTML_PAGE = """<!DOCTYPE html>
               </video>
             </div>
 
-            <div class="bg-zinc-900/90 border border-zinc-800/80 rounded-xl p-3 text-xs space-y-1.5">
-              <div class="font-bold text-zinc-100 text-sm leading-tight">${escapeHtml(a.title)}</div>
-              <div class="text-indigo-400 font-mono text-[11px] font-medium leading-relaxed">${escapeHtml(a.hashtags)}</div>
-              ${a.hook ? `<div class="text-[11px] text-zinc-300 italic pt-1 border-t border-zinc-800"><b class="text-zinc-400 not-italic">Hook:</b> "${escapeHtml(a.hook)}"</div>` : ''}
-              <div class="text-[10px] text-zinc-400 font-mono pt-1 ${a.hook ? '' : 'border-t border-zinc-800'}">${escapeHtml(a.timestamps || '1080x1920 60 FPS')}</div>
+            <!-- Dynamic Metadata Studio Box -->
+            <div class="bg-zinc-900/90 border border-zinc-800/80 rounded-xl p-3.5 text-xs space-y-3">
+              <!-- Viral Title & Live YouTube Regen Button -->
+              <div>
+                <div class="flex items-center justify-between mb-1">
+                  <label class="text-[10px] font-bold text-zinc-300 uppercase tracking-wide flex items-center space-x-1">
+                    <i class="fa-solid fa-heading text-indigo-400"></i>
+                    <span>Viral Title</span>
+                  </label>
+                  <button id="regen_btn_${a.id}" onclick="regenerateFinalClipMetadata('${a.filename}', '${a.id}', '${escapeHtml(a.hook || '')}', '${escapeHtml(a.timestamps || '')}')" 
+                    class="text-[11px] px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-300 hover:text-white font-bold transition-all border border-indigo-700/60 flex items-center space-x-1 cursor-pointer shadow-sm" title="Research YouTube live autocomplete & regenerate CTR title, keywords, and description">
+                    <i class="fa-solid fa-wand-magic-sparkles text-[10px] text-indigo-400"></i>
+                    <span>Regen SEO Metadata</span>
+                  </button>
+                </div>
+                <input type="text" id="final_title_${a.id}" value="${escapeHtml(a.title)}" 
+                  class="w-full bg-zinc-950 border border-zinc-800 focus:border-indigo-500 rounded-lg px-2.5 py-1.5 text-xs font-bold text-white shadow-inner">
+              </div>
+
+              <!-- SEO Description Box with Keywords in First 200 Characters -->
+              <div>
+                <div class="flex items-center justify-between mb-1">
+                  <div class="flex items-center space-x-1.5">
+                    <span class="text-[10px] font-bold text-emerald-400 uppercase tracking-wide flex items-center">
+                      <i class="fa-solid fa-bolt text-emerald-400 mr-1"></i>
+                      <span>Description (Keywords in First 200 Chars)</span>
+                    </span>
+                    <span class="text-[9px] bg-emerald-950/80 text-emerald-300 border border-emerald-800 px-1.5 py-0.5 rounded font-mono font-bold">SEO Indexed</span>
+                  </div>
+                  <span id="desc_len_${a.id}" class="text-[10px] font-mono text-zinc-500">${descText.length} chars</span>
+                </div>
+                <textarea id="final_desc_${a.id}" rows="4" 
+                  oninput="updateFinalDescLen('${a.id}')"
+                  class="w-full bg-zinc-950 border border-zinc-800 focus:border-emerald-500 rounded-lg p-2.5 text-[11px] text-zinc-200 leading-relaxed font-sans shadow-inner" 
+                  placeholder="SEO description with keywords in the first 200 characters...">${escapeHtml(descText)}</textarea>
+              </div>
+
+              <!-- Hashtags -->
+              <div>
+                <label class="text-[10px] font-bold text-zinc-400 uppercase tracking-wide mb-1 block">5 Niche Trending Hashtags</label>
+                <input type="text" id="final_tags_${a.id}" value="${escapeHtml(a.hashtags || '')}" 
+                  class="w-full bg-zinc-950 border border-zinc-800 focus:border-indigo-500 rounded-lg px-2.5 py-1.5 text-xs text-indigo-300 font-mono shadow-inner">
+              </div>
+
+              ${a.hook ? `<div class="text-[11px] text-zinc-400 italic pt-1 border-t border-zinc-800"><b class="text-zinc-500 not-italic">Opening Hook:</b> "${escapeHtml(a.hook)}"</div>` : ''}
+              <div class="text-[10px] text-zinc-500 font-mono pt-0.5">${escapeHtml(a.timestamps || '1080x1920 60 FPS')}</div>
             </div>
 
+            <!-- Action Buttons -->
             <div class="flex flex-col space-y-2 pt-1">
-              <button onclick="openPublishModal('${a.filename}', '${escapeHtml(a.title)}', '${escapeHtml(a.hashtags)}', '${escapeHtml(a.hook || '')}', 'final', '${escapeHtml(a.timestamps || '')}')" 
+              <button onclick="publishFinalClipWithCurrentData('${a.filename}', '${a.id}', '${escapeHtml(a.hook || '')}', '${escapeHtml(a.timestamps || '')}')" 
                 class="w-full bg-gradient-to-r from-red-600 via-rose-600 to-red-600 hover:from-red-500 hover:to-rose-500 text-white text-xs py-2.5 rounded-xl font-bold shadow-lg shadow-red-600/30 flex items-center justify-center space-x-2 transition-all active:scale-[0.98] cursor-pointer">
                 <i class="fa-brands fa-youtube text-sm"></i>
                 <span>Publish to YouTube Studio</span>
               </button>
               <div class="flex space-x-2">
+                <button onclick="saveFinalClipMetadata('${a.filename}', '${a.id}', '${escapeHtml(a.hook || '')}', '${escapeHtml(a.timestamps || '')}')"
+                  class="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 hover:text-white text-xs py-2 rounded-lg font-semibold transition-all flex items-center justify-center space-x-1.5 cursor-pointer shadow">
+                  <i class="fa-solid fa-floppy-disk text-indigo-400"></i>
+                  <span>Save Metadata</span>
+                </button>
                 <a href="/media/final/${a.filename}" download="${a.filename}" 
-                  class="flex-1 text-center bg-zinc-800 hover:bg-zinc-700 text-white text-xs py-2 rounded-lg font-semibold transition-all">
-                  <i class="fa-solid fa-download mr-1"></i> Download MP4
+                  class="flex-1 text-center bg-zinc-800 hover:bg-zinc-700 text-white text-xs py-2 rounded-lg font-semibold transition-all flex items-center justify-center space-x-1">
+                  <i class="fa-solid fa-download mr-1"></i>
+                  <span>Download MP4</span>
                 </a>
-                <button onclick="copyMetadata('${escapeHtml(a.title)}', '${escapeHtml(a.hashtags)}')"
-                  class="px-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs py-2 rounded-lg transition-all cursor-pointer" title="Copy Title & Tags">
+                <button onclick="copyFullMetadata('${a.id}')"
+                  class="px-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs py-2 rounded-lg transition-all cursor-pointer" title="Copy Title, Description & Hashtags">
                   <i class="fa-regular fa-copy"></i>
                 </button>
               </div>
@@ -4096,6 +4324,134 @@ HTML_PAGE = """<!DOCTYPE html>
           </div>
         `;
       }).join('');
+
+      initLazyMediaObserver();
+    }
+
+    const finalClipVariations = {};
+
+    function updateFinalDescLen(cardId) {
+      const descEl = document.getElementById('final_desc_' + cardId);
+      const lenEl = document.getElementById('desc_len_' + cardId);
+      if (descEl && lenEl) {
+        lenEl.textContent = `${descEl.value.length} chars`;
+      }
+    }
+
+    async function regenerateFinalClipMetadata(filename, cardId, hook, timestamps) {
+      const btn = document.getElementById('regen_btn_' + cardId);
+      const titleInput = document.getElementById('final_title_' + cardId);
+      const descInput = document.getElementById('final_desc_' + cardId);
+      const tagsInput = document.getElementById('final_tags_' + cardId);
+
+      finalClipVariations[filename] = (finalClipVariations[filename] || 0) + 1;
+
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-[10px]"></i><span>Researching...</span>';
+      }
+
+      try {
+        const res = await fetch('/api/regenerate-metadata', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            is_final: true,
+            filename: filename,
+            id: cardId,
+            hook: hook,
+            text: hook,
+            timestamps: timestamps,
+            variation: finalClipVariations[filename],
+            video_title: window.__sourceTitle || ''
+          })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          if (titleInput) titleInput.value = data.title;
+          if (descInput) descInput.value = data.description;
+          if (tagsInput) tagsInput.value = data.hashtags;
+          updateFinalDescLen(cardId);
+
+          const card = document.getElementById('card_' + cardId);
+          if (card) {
+            card.classList.add('ring-2', 'ring-emerald-500/60');
+            setTimeout(() => card.classList.remove('ring-2', 'ring-emerald-500/60'), 1500);
+          }
+
+          if (btn) {
+            btn.innerHTML = '<i class="fa-solid fa-check text-emerald-400 text-[10px]"></i><span>Updated ✓</span>';
+            setTimeout(() => {
+              btn.disabled = false;
+              btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles text-[10px] text-indigo-400"></i><span>Regen SEO Metadata</span>';
+            }, 1500);
+          }
+        } else {
+          alert('Failed to regenerate metadata: ' + (data.detail || 'Server error'));
+          if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles text-[10px] text-indigo-400"></i><span>Regen SEO Metadata</span>';
+          }
+        }
+      } catch (err) {
+        alert('Error connecting to YouTube research endpoint: ' + err.message);
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles text-[10px] text-indigo-400"></i><span>Regen SEO Metadata</span>';
+        }
+      }
+    }
+
+    async function saveFinalClipMetadata(filename, cardId, hook, timestamps) {
+      const titleInput = document.getElementById('final_title_' + cardId);
+      const descInput = document.getElementById('final_desc_' + cardId);
+      const tagsInput = document.getElementById('final_tags_' + cardId);
+
+      const title = titleInput ? titleInput.value : '';
+      const desc = descInput ? descInput.value : '';
+      const tags = tagsInput ? tagsInput.value : '';
+
+      try {
+        const res = await fetch('/api/save-clip-metadata', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            filename: filename,
+            title: title,
+            description: desc,
+            hashtags: tags,
+            hook: hook,
+            timestamps: timestamps
+          })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          alert(`✓ Saved updated metadata for ${filename}!`);
+        } else {
+          alert('Failed to save metadata: ' + (data.error || 'Server error'));
+        }
+      } catch (e) {
+        alert('Network error saving metadata: ' + e.message);
+      }
+    }
+
+    function copyFullMetadata(cardId) {
+      const title = (document.getElementById('final_title_' + cardId) || {}).value || '';
+      const desc = (document.getElementById('final_desc_' + cardId) || {}).value || '';
+      const tags = (document.getElementById('final_tags_' + cardId) || {}).value || '';
+
+      const fullText = `TITLE:\n${title}\n\nDESCRIPTION:\n${desc}\n\nHASHTAGS:\n${tags}`;
+      navigator.clipboard.writeText(fullText);
+      alert('✓ Copied Title, SEO Description & Hashtags to clipboard!');
+    }
+
+    function publishFinalClipWithCurrentData(filename, cardId, hook, timestamps) {
+      const title = (document.getElementById('final_title_' + cardId) || {}).value || '';
+      const desc = (document.getElementById('final_desc_' + cardId) || {}).value || '';
+      const tags = (document.getElementById('final_tags_' + cardId) || {}).value || '';
+
+      openPublishModalWithData(filename, title, desc, tags, hook, 'final', timestamps);
+    }
 
       initLazyMediaObserver();
     }
