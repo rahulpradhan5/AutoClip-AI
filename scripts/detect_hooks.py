@@ -24,29 +24,40 @@ if str(SCRIPTS_DIR) not in sys.path:
 try:
     from generate_metadata import generate_clip_metadata
 except ImportError:
-    def generate_clip_metadata(text, hook, idx=1):
+    def generate_clip_metadata(text, hook, idx=1, variation=0, video_title=""):
         return f"Viral Moment #{idx} 🤯", "#Shorts #Viral #Trending #HighStakes #FYP"
+
+try:
+    from ai_connector import (
+        get_ai_config,
+        score_hook_with_ai,
+        batch_detect_and_title_moments_with_ai,
+    )
+except ImportError:
+    get_ai_config = lambda: {"enabled": False}
+    score_hook_with_ai = lambda *a, **k: None
+    batch_detect_and_title_moments_with_ai = lambda *a, **k: None
 
 # Extreme intensity, drama, action & intimate / romance trigger patterns
 HIGH_INTENSITY_TRIGGERS = [
     # Violence, death, threats & action
-    r"\b(kill|killed|die|dying|dead|shoot|gun|weapon|knife|murder|hostage|threat)\b",
+    r"\b(kill|killed|die|dying|dead|shoot|gun|weapon|knife|murder|hostage|threat|fight)\b",
     # Law enforcement & arrests
-    r"\b(police|cops?|arrest|arrested|caught|busted|jail|prison|patrol|siren)\b",
+    r"\b(police|cops?|arrest|arrested|caught|busted|jail|prison|patrol|siren|handcuff)\b",
     # Money, crimes & heists
-    r"\b(money|dollars?|cash|million|billion|heist|rob|robbery|stole|stolen|rich|broke)\b",
+    r"\b(money|dollars?|cash|million|billion|heist|rob|robbery|stole|stolen|rich|broke|treasure|strong\s*box)\b",
     # Betrayal, lies & secrets
-    r"\b(betray|betrayed|liar|lied|snitch|traitor|trust|truth|secret|confess)\b",
+    r"\b(betray|betrayed|liar|lied|snitch|traitor|trust|truth|secret|confess|stalking|stalker)\b",
     # Danger & adrenaline escapes
     r"\b(run|escape|hide|trap|trapped|ambush|surrounded|danger|warning|emergency)\b",
     # Shock, expletives & extreme reactions
-    r"\b(holy shit|what the fuck|oh my god|no fucking way|are you fucking serious|shut up|get out)\b",
+    r"\b(holy shit|what the fuck|oh my god|no fucking way|are you fucking serious|shut up|get out|psycho|crazy)\b",
     
     # Intimate, Sexual & Sensual dialogue
     r"\b(sex|sexy|sexual|horny|naked|undress|bedroom|in bed|sleep together|slept with|hook up|hooking up|one night stand|make love|intimate|intimacy|body|touch|touching|stroke|feel you|strip|pleasure|turn me on|turned on|bedroom talk)\b",
     
     # Kissing, Flirting, Romance & Physical Chemistry
-    r"\b(kiss|kissing|kissed|smooch|make out|making out|french kiss|lips|mouth|tongue|hold me|hug|cuddle|attracted|crush|hot|cute|handsome|gorgeous|beautiful|babe|baby|sweetheart|darling|honey)\b",
+    r"\b(kiss|kissing|kissed|smooch|make out|making out|french kiss|lips|mouth|tongue|hold me|hug|cuddle|attracted|crush|hot|cute|handsome|gorgeous|beautiful|babe|baby|sweetheart|darling|honey|marry|married|marriage)\b",
     
     # Pickup lines, Rizz, Flirty openers & Confessions
     r"\b(pick up line|pickup line|rizz|take you out|date me|give me your number|can i have your number|you're so fine|are you single|got a girlfriend|got a boyfriend|have a boyfriend|have a girlfriend|like you|into you|fall for you|wanna be mine|come home with me|my place or yours|flirt|flirting)\b",
@@ -58,44 +69,69 @@ HIGH_INTENSITY_TRIGGERS = [
     r"\b(pyaar|ishq|mohabbat|dil|chumma|pappi|kissi|sundar|haseen|gf|bf|dhokha|setting|pata|patana|line maarna|romance|chakkar)\b",
 ]
 
+WEAK_OPENERS = re.compile(
+    r"^(?:>>\s*)?(?:um|uh|well|like|so|and|yeah|okay|right|oh|i mean|you know|just|but|nuh-uh|uh-huh|barely|thing\?|fixing my|heard of|what\?|didn't think)\b",
+    re.IGNORECASE
+)
+
+CENSOR_CLEANER = re.compile(r"\[\s*__\s*\]|\[\s*Â__Â\s*\]|\[\s*censored\s*\]", re.IGNORECASE)
+
+def clean_dialogue(text: str) -> str:
+    """Strips subtitle markers, censorship brackets, and stray artifacts."""
+    if not text:
+        return ""
+    t = text.replace(">>", "").replace("<<", "")
+    t = CENSOR_CLEANER.sub("...", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
 INTIMATE_ROMANCE_PATTERNS = [
-    r"\b(sex|sexy|sexual|naked|bedroom|in bed|sleep together|slept with|hook up|make out|kiss|kissing|kissed|lips|smooch|pick up line|pickup line|rizz|number|take you out|date me|single|fine|flirt|flirting|cheat|cheated|cheating|affair|jealous|girlfriend|boyfriend|crush|love you|turn me on|chumma|pyaar|ishq)\b"
+    r"\b(sex|sexy|sexual|naked|bedroom|in bed|sleep together|slept with|hook up|make out|kiss|kissing|kissed|lips|smooch|pick up line|pickup line|rizz|number|take you out|date me|single|fine|flirt|flirting|cheat|cheated|cheating|affair|jealous|girlfriend|boyfriend|crush|love you|turn me on|chumma|pyaar|ishq|marry|married)\b"
 ]
 
 HOOK_OPENERS = [
     r"\b(why|how|what if|the secret|nobody knows|stop doing|the truth about|never|always|biggest mistake|warning|watch this)\b",
-    r"\b(insane|crazy|unbelievable|mind-blowing|shocking|secret|proven|hack)\b",
-    r"\b(bro|omg|oh my god|no way|what the|are you serious|is this real|look at this|wait wait|listen to me)\b",
-    r"\b(are you single|can i ask you something|you're so fine|give me your number|do you have a girlfriend|do you have a boyfriend|wanna come over|wanna kiss|look at her|look at him)\b",
+    r"\b(insane|crazy|unbelievable|mind-blowing|shocking|secret|proven|hack|stalking|married)\b",
+    r"\b(bro|omg|oh my god|no way|what the|are you serious|is this real|look at this|wait wait|listen to me|you lied)\b",
+    r"\b(are you single|can i ask you something|you're so fine|give me your number|do you have a girlfriend|do you have a boyfriend|wanna come over|wanna kiss|look at her|look at him|got your gun)\b",
     r"\b(kyun|kaise|kya|sach|galti|mat karna|secret|dekho|asliyat)\b",
 ]
 
 def calculate_intensity_score(text: str, duration: float, words: list) -> tuple[float, str]:
     score = 15.0
-    text_lower = text.lower()
+    text_clean = clean_dialogue(text)
+    text_lower = text_clean.lower()
 
-    # Optimal viral Short duration is 25 to 50 seconds
-    if 25.0 <= duration <= 50.0:
-        score += 25.0
-    elif 50.0 < duration <= 55.0:
-        score += 15.0
+    # Optimal viral Short duration is 20 to 38 seconds (High retention & loopability)
+    if 20.0 <= duration <= 38.0:
+        score += 30.0
+    elif 38.0 < duration <= 45.0:
+        score += 18.0
+    elif duration > 50.0:
+        score -= 25.0  # Too long for high-speed Shorts feed
     else:
         score -= 10.0
 
-    # 1. Opening hook in first 12 words
-    first_words = " ".join([w.get("word", "").lower() for w in words[:14]])
+    # 1. Opening hook in first 10 words (Zero-Fluff 0-2s rule)
+    first_words = " ".join([w.get("word", "").lower() for w in words[:10]])
+    first_words_clean = clean_dialogue(first_words).lower()
+
+    # Heavy penalty for starting with conversational filler or weak mutterings
+    if WEAK_OPENERS.match(first_words_clean):
+        score -= 30.0
+
     hook_matched = False
     for pat in HOOK_OPENERS:
-        if re.search(pat, first_words):
-            score += 25.0
+        if re.search(pat, first_words_clean):
+            score += 35.0
             hook_matched = True
             break
         elif re.search(pat, text_lower):
             score += 10.0
 
-    # Question hook
-    if "?" in first_words or first_words.startswith(("why", "how", "what", "is ", "are ", "do ", "can ", "did ")):
-        score += 15.0
+    # High-impact immediate question or confrontation hook
+    if "?" in first_words_clean or any(first_words_clean.startswith(q) for q in ["why", "how", "what", "is ", "are ", "do ", "can ", "did ", "who ", "where "]):
+        score += 20.0
 
     # 2. High intensity drama / action triggers throughout segment
     intensity_hits = 0
@@ -105,12 +141,18 @@ def calculate_intensity_score(text: str, duration: float, words: list) -> tuple[
             intensity_hits += matches
             score += min(30.0, matches * 12.0)
 
+    # Immediate trigger in first 8 words gets massive boost
+    for pat in HIGH_INTENSITY_TRIGGERS:
+        if re.search(pat, first_words_clean):
+            score += 25.0
+            break
+
     # 3. Speech density (pacing)
     wps = len(words) / max(1.0, duration)
     if 2.2 <= wps <= 4.2:
         score += 15.0
     elif wps < 1.4:
-        score -= 15.0  # Too slow / dead air
+        score -= 20.0  # Too slow / dead air
 
     # Cap score at 100
     normalized_score = min(100.0, max(10.0, score))
@@ -125,7 +167,7 @@ def calculate_intensity_score(text: str, duration: float, words: list) -> tuple[
             label = "Kiss & Romance 💋"
         elif re.search(r"\b(pick up line|pickup line|rizz|take you out|date me|single|fine|give me your number|wanna come over)\b", text_lower):
             label = "Rizz & Flirting 😏"
-        elif re.search(r"\b(cheat|cheated|cheating|side piece|side chick|affair|jealous|who is she|who is he)\b", text_lower):
+        elif re.search(r"\b(cheat|cheated|cheating|side piece|side chick|affair|jealous|who is she|who is he|marry|married)\b", text_lower):
             label = "Relationship Drama 💔"
         else:
             label = "Intense Romance ❤️"
@@ -133,10 +175,12 @@ def calculate_intensity_score(text: str, duration: float, words: list) -> tuple[
         label = "Extreme Intensity 🔥"
     elif normalized_score >= 70 or hook_matched:
         label = "High Drama ⚡"
-    elif "?" in first_words:
+    elif "?" in first_words_clean:
         label = "Curiosity Gap ❓"
     else:
         label = "Strong Moment ✨"
+
+    return normalized_score, label
 
     return round(normalized_score, 1), label
 
@@ -197,8 +241,8 @@ def score_candidate_with_ollama(text: str, model_name: str, host: str = "http://
 
 def find_viral_segments(
     transcript_path: str,
-    min_duration: float = 25.0,
-    max_duration: float = 55.0,
+    min_duration: float = 20.0,
+    max_duration: float = 42.0,
     top_k: int = 15,
     start_after_sec: float = 0.0,
     start_index: int = 1,
@@ -226,17 +270,33 @@ def find_viral_segments(
         if start_t < start_after_sec:
             continue
 
+        start_seg_text = clean_dialogue(segments[i].get("text", "")).strip()
+
+        # ZERO-FLUFF FILTER: Avoid starting clips on weak mutterings or small talk fragments
+        # unless that segment immediately leads to a question or hook within itself
+        if WEAK_OPENERS.match(start_seg_text) and "?" not in start_seg_text and len(start_seg_text.split()) < 4:
+            continue
+
         cur_words = []
         cur_text = []
 
         for j in range(i, len(segments)):
             seg = segments[j]
-            cur_text.append(seg.get("text", "").strip())
+
+            # DEAD-AIR DETECTION: If silence between dialogue segments exceeds 2.5s, cut candidate here
+            if j > i:
+                prev_end = segments[j - 1]["end"]
+                cur_start = seg["start"]
+                if (cur_start - prev_end) > 2.5:
+                    break
+
+            raw_txt = seg.get("text", "").strip()
+            cur_text.append(clean_dialogue(raw_txt))
             if seg.get("words"):
                 cur_words.extend(seg["words"])
             else:
-                for token in seg.get("text", "").split():
-                    cur_words.append({"word": token})
+                for token in raw_txt.split():
+                    cur_words.append({"word": clean_dialogue(token)})
 
             end_t = seg["end"]
             duration = end_t - start_t
@@ -253,7 +313,7 @@ def find_viral_segments(
                 if ends_cleanly:
                     score_val = min(100.0, score_val + 10.0)
 
-                first_words_str = " ".join([w.get("word", "") for w in cur_words[:12]])
+                first_words_str = clean_dialogue(" ".join([w.get("word", "") for w in cur_words[:10]]))
 
                 candidates.append({
                     "start": round(start_t, 2),
@@ -262,7 +322,7 @@ def find_viral_segments(
                     "score": score_val,
                     "intensity": label,
                     "text": full_text,
-                    "hook": first_words_str + ("..." if len(cur_words) > 12 else ""),
+                    "hook": first_words_str + ("..." if len(cur_words) > 10 else ""),
                     "ends_cleanly": ends_cleanly
                 })
 
@@ -282,34 +342,102 @@ def find_viral_segments(
             if len(selected) >= top_k:
                 break
 
-    # Check optional Ollama LLM scoring
+    # Check AI Model Connector (Antigravity CLI, Gemini, OpenAI, Claude, Groq, Ollama)
+    ai_cfg = get_ai_config()
+    ai_active = bool(ai_cfg and ai_cfg.get("enabled", True))
+    ai_batch_data = None
+    if ai_active:
+        print(f"[detect_hooks] AI Director Active ({ai_cfg.get('provider', 'antigravity').upper()} • {ai_cfg.get('model')})!")
+        print(f"[detect_hooks] Prompting selected AI model to curate hot moments, viral titles, hooks, and caption styles...")
+        try:
+            ai_batch_data = batch_detect_and_title_moments_with_ai(selected, video_title=video_title, top_n=len(selected))
+        except Exception as e:
+            print(f"[detect_hooks] AI batch generation failed, falling back to NLP heuristics: {e}")
+            ai_batch_data = None
+
+    # Check optional fallback Ollama LLM scoring if AI connector is not configured
     ollama_online = False
     ollama_model = ""
-    if use_ollama:
+    if not ai_active and use_ollama:
         ollama_online, ollama_model = check_ollama_available()
         if ollama_online:
             print(f"[detect_hooks] Local Ollama detected! Enhancing top hooks with model: {ollama_model}")
         else:
-            print("[detect_hooks] Ollama not active. Using built-in high-speed NLP heuristic engine.")
+            print("[detect_hooks] Using built-in high-speed NLP heuristic engine.")
+
+    # Save AI recommended caption style if returned
+    if ai_batch_data and "caption_style" in ai_batch_data:
+        try:
+            temp_dir = Path(transcript_path).parent
+            cap_style_file = temp_dir / "ai_caption_style.json"
+            with open(cap_style_file, "w", encoding="utf-8") as f:
+                json.dump(ai_batch_data["caption_style"], f, indent=2)
+            c_style = ai_batch_data["caption_style"]
+            print(f"[detect_hooks] AI Caption Stylist: Theme={c_style.get('theme')} | Format={c_style.get('format')} | Pos={c_style.get('position')}")
+        except Exception:
+            pass
+
+    # Map AI-curated moments
+    ai_moments_by_idx = {}
+    if ai_batch_data and "moments" in ai_batch_data:
+        for m in ai_batch_data["moments"]:
+            idx = m.get("index")
+            if idx is not None:
+                ai_moments_by_idx[idx] = m
 
     # Attach dynamic titles and niche hashtags
     for offset, c in enumerate(selected):
         c_idx = start_index + offset
         c["id"] = c_idx
-        title, hashtags = generate_clip_metadata(c["text"], c["hook"], c_idx, 0, video_title=video_title)
-        c["title"] = title
-        c["hashtags"] = hashtags
 
-        if ollama_online and offset < 5:
-            llm_res = score_candidate_with_ollama(c["text"], ollama_model)
-            if llm_res and isinstance(llm_res, dict):
-                llm_score = llm_res.get("virality_score")
-                if llm_score:
-                    c["score"] = round((c["score"] + float(llm_score)) / 2.0, 1)
-                if llm_res.get("viral_title"):
-                    c["title"] = f"{llm_res['viral_title'].strip()} 🔥"
-                if llm_res.get("hook_type"):
-                    c["intensity"] = f"{llm_res['hook_type'].strip()} ⚡"
+        # If AI curated this moment, apply the AI-crafted metadata
+        ai_m = ai_moments_by_idx.get(offset + 1)
+        if ai_m:
+            c["score"] = float(ai_m.get("score", c["score"]))
+            c["title"] = ai_m.get("viral_title") or c.get("title", "")
+            c["hashtags"] = ai_m.get("hashtags") or "#Shorts #Viral #Trending"
+            if ai_m.get("hook"):
+                c["hook"] = ai_m["hook"].strip()
+            if ai_m.get("intensity"):
+                c["intensity"] = ai_m["intensity"].strip()
+            c["ai_powered"] = True
+            c["generated_by"] = ai_batch_data.get("generated_by", "ai")
+        else:
+            # Fallback to local heuristic metadata
+            title, hashtags = generate_clip_metadata(c["text"], c["hook"], c_idx, 0, video_title=video_title)
+            c["title"] = title
+            c["hashtags"] = hashtags
+            c["ai_powered"] = False
+
+            if ollama_online and offset < 5:
+                llm_res = score_candidate_with_ollama(c["text"], ollama_model)
+                if llm_res and isinstance(llm_res, dict):
+                    llm_score = llm_res.get("virality_score")
+                    if llm_score:
+                        c["score"] = round((c["score"] + float(llm_score)) / 2.0, 1)
+                    if llm_res.get("viral_title"):
+                        c["title"] = f"{llm_res['viral_title'].strip()} 🔥"
+                    if llm_res.get("hook_type"):
+                        c["intensity"] = f"{llm_res['hook_type'].strip()} ⚡"
+
+        # AI Audio Director: Select ideal royalty-free BGM and hook SFX
+        try:
+            from audio_mixer import ai_select_audio
+            rec = ai_select_audio(
+                transcript=c.get("text", ""),
+                hook=c.get("hook", ""),
+                video_title=video_title,
+                intensity_score=c.get("score", 85.0)
+            )
+            c["bgm_track"] = rec.get("bgm_track", "dark_tension")
+            c["bgm_volume"] = rec.get("bgm_volume", 0.16)
+            c["hook_sfx"] = rec.get("hook_sfx", "whoosh_riser")
+            c["ai_audio_reason"] = rec.get("ai_reasoning", "AI auto-ducked BGM")
+        except Exception:
+            c["bgm_track"] = "dark_tension"
+            c["bgm_volume"] = 0.16
+            c["hook_sfx"] = "whoosh_riser"
+            c["ai_audio_reason"] = "Royalty-free BGM with sidechain ducking"
 
     return selected
 
@@ -319,8 +447,8 @@ def main():
     parser.add_argument("--transcript", default="./temp_work/transcript.json", help="Path to transcript JSON")
     parser.add_argument("--video-title", default="", help="Source video title for context-aware clipping & niche metadata")
     parser.add_argument("--top-k", type=int, default=15, help="Number of viral clips to detect")
-    parser.add_argument("--min-duration", type=float, default=25.0, help="Minimum clip duration in seconds")
-    parser.add_argument("--max-duration", type=float, default=55.0, help="Maximum clip duration in seconds")
+    parser.add_argument("--min-duration", type=float, default=20.0, help="Minimum clip duration in seconds")
+    parser.add_argument("--max-duration", type=float, default=42.0, help="Maximum clip duration in seconds")
     parser.add_argument("--start-after", type=float, default=0.0, help="Skip segments before this timestamp (resume)")
     parser.add_argument("--start-index", type=int, default=1, help="Starting index for clip numbering")
     parser.add_argument("--output", default="./temp_work/viral_hooks.json", help="Path to save candidate hooks")

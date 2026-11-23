@@ -12,8 +12,18 @@ import os
 import shutil
 import subprocess
 import sys
-import cv2
-import numpy as np
+
+try:
+    import cv2
+    import numpy as np
+except ModuleNotFoundError:
+    _venv_site = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".venv", "Lib", "site-packages"))
+    if os.path.exists(_venv_site) and _venv_site not in sys.path:
+        sys.path.insert(0, _venv_site)
+        import cv2
+        import numpy as np
+    else:
+        raise
 
 
 def find_binary(name: str, fallback_paths: list[str]) -> str:
@@ -69,6 +79,74 @@ def render_blurred_pillarbox(frame: np.ndarray, target_w: int = 1080, target_h: 
 
     blurred_bg[y_fg_start:y_fg_end, 0:target_w] = fg_resized[0:actual_h, 0:target_w]
     return blurred_bg
+
+
+def render_streamer_split(
+    frame: np.ndarray,
+    face_box: tuple | None,
+    target_w: int = 1080,
+    target_h: int = 1920,
+    top_ratio: float = 0.36
+) -> np.ndarray:
+    """
+    Renders Instagram/TikTok style Streamer Split-Screen:
+    Top section (36%): Streamer's facecam zoomed in, stabilized, and centered.
+    Bottom section (64%): Main gameplay action.
+    Separated by a modern accent divider.
+    """
+    orig_h, orig_w = frame.shape[:2]
+    top_h = int(round(target_h * top_ratio))
+    bot_h = target_h - top_h
+    out_frame = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+
+    # 1. Top Section: Streamer Facecam
+    if face_box is not None:
+        fx, fy, fw, fh = face_box
+        cx = fx + fw / 2.0
+        cy = fy + fh / 2.0
+
+        top_aspect = target_w / top_h
+        crop_fh = fh * 2.2
+        crop_fw = crop_fh * top_aspect
+
+        crop_x1 = max(0, int(round(cx - crop_fw / 2.0)))
+        crop_x2 = min(orig_w, int(round(cx + crop_fw / 2.0)))
+        crop_y1 = max(0, int(round(cy - crop_fh / 2.0)))
+        crop_y2 = min(orig_h, int(round(cy + crop_fh / 2.0)))
+
+        if (crop_x2 - crop_x1) > 10 and (crop_y2 - crop_y1) > 10:
+            face_crop = frame[crop_y1:crop_y2, crop_x1:crop_x2]
+            top_img = cv2.resize(face_crop, (target_w, top_h), interpolation=cv2.INTER_LANCZOS4)
+        else:
+            top_img = cv2.resize(frame, (target_w, top_h), interpolation=cv2.INTER_LINEAR)
+    else:
+        # Fallback: blurred duplicate of the upper frame
+        small = cv2.resize(frame, (target_w // 4, top_h // 4), interpolation=cv2.INTER_LINEAR)
+        blurred_small = cv2.GaussianBlur(small, (25, 25), 0)
+        top_img = cv2.resize(blurred_small, (target_w, top_h), interpolation=cv2.INTER_LINEAR)
+        top_img = (top_img.astype(np.float32) * 0.75).astype(np.uint8)
+
+    out_frame[0:top_h, 0:target_w] = top_img
+
+    # 2. Bottom Section: Gameplay
+    bot_aspect = target_w / bot_h
+    gp_crop_w = int(round(orig_h * bot_aspect))
+    if gp_crop_w <= orig_w:
+        gp_x1 = (orig_w - gp_crop_w) // 2
+        gp_crop = frame[0:orig_h, gp_x1:gp_x1 + gp_crop_w]
+        bot_img = cv2.resize(gp_crop, (target_w, bot_h), interpolation=cv2.INTER_LANCZOS4)
+    else:
+        bot_img = cv2.resize(frame, (target_w, bot_h), interpolation=cv2.INTER_LANCZOS4)
+
+    out_frame[top_h:target_h, 0:target_w] = bot_img
+
+    # 3. Modern Accent Divider Line (4px thick with glowing gradient effect)
+    divider_y = top_h
+    cv2.line(out_frame, (0, divider_y - 2), (target_w, divider_y - 2), (30, 30, 35), 1)
+    cv2.line(out_frame, (0, divider_y), (target_w, divider_y), (255, 215, 0), 2)  # Gold highlight
+    cv2.line(out_frame, (0, divider_y + 2), (target_w, divider_y + 2), (30, 30, 35), 1)
+
+    return out_frame
 
 
 def is_scene_cut(
@@ -210,8 +288,9 @@ def smart_crop_video(
             prev_hsv = curr_small_hsv
 
             detected_face_x = None
+            detected_face_box = None
 
-            if mode != "pillarbox":
+            if mode not in ("pillarbox", "blur-fill"):
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 results = face_detector.process(rgb_frame)
 
@@ -226,7 +305,7 @@ def smart_crop_video(
                         # Filter out tiny noise detections (< 5% frame height)
                         if fh >= orig_h * 0.05 and fw >= orig_w * 0.03:
                             cx = fx + fw / 2.0
-                            valid_faces.append((cx, fw * fh))
+                            valid_faces.append((cx, fw * fh, (fx, fy, fw, fh)))
 
                     if valid_faces:
                         if cut_detected:
@@ -234,10 +313,12 @@ def smart_crop_video(
                             # Snap directly to the most prominent/largest face in the new shot
                             primary_face = max(valid_faces, key=lambda f: f[1])
                             detected_face_x = primary_face[0]
+                            detected_face_box = primary_face[2]
                         else:
                             # Continuity: stay locked on speaker closest to current camera center
                             closest = min(valid_faces, key=lambda f: abs(f[0] - current_center_x))
                             detected_face_x = closest[0]
+                            detected_face_box = closest[2]
 
                         consecutive_face_frames += 1
                         no_face_frames = 0
@@ -248,8 +329,10 @@ def smart_crop_video(
                     consecutive_face_frames = 0
                     no_face_frames += 1
 
-            if mode == "pillarbox":
+            if mode in ("pillarbox", "blur-fill"):
                 final_frame = render_blurred_pillarbox(frame, target_w, target_h)
+            elif mode == "split-streamer":
+                final_frame = render_streamer_split(frame, detected_face_box, target_w, target_h)
             else:
                 # Mode is auto or crop-fullscreen
                 if detected_face_x is not None:
@@ -335,7 +418,7 @@ def main():
     parser.add_argument("--end", type=float, default=None, help="End time in seconds")
     parser.add_argument("--ema-alpha", type=float, default=0.05, help="EMA smoothing factor (0.03-0.08)")
     parser.add_argument("--no-face-timeout", type=float, default=1.5, help="Seconds without face before blurred pillarbox")
-    parser.add_argument("--mode", default="auto", choices=["auto", "crop-fullscreen", "pillarbox"], help="Framing mode")
+    parser.add_argument("--mode", default="auto", choices=["auto", "crop-fullscreen", "pillarbox", "split-streamer", "blur-fill"], help="Framing mode")
     args = parser.parse_args()
 
     smart_crop_video(

@@ -63,10 +63,39 @@ STOP_WORDS = {
 }
 
 
+WEAK_STARTERS = re.compile(
+    r"^(?:>>\s*)?(?:um|uh|well|like|so|and|yeah|okay|right|oh|i mean|you know|just|but|nuh-uh|uh-huh|barely|thing\?|fixing my|heard of|what\?|didn't think)\b",
+    re.IGNORECASE
+)
+
 def clean_text(text: str) -> str:
-    t = re.sub(r"[\r\n\t]+", " ", text).strip()
-    t = re.sub(r'["\']', '', t)
+    if not text:
+        return ""
+    t = text.replace(">>", "").replace("<<", "")
+    t = re.sub(r"\[\s*__\s*\]|\[\s*Â__Â\s*\]|\[\s*censored\s*\]", "...", t)
+    t = re.sub(r"[\r\n\t]+", " ", t).strip()
     return t
+
+def extract_punchy_quote(text: str) -> str:
+    """Extracts the most confrontational, emotional, or high-stakes short quote for the title."""
+    clean = clean_text(text)
+    clauses = re.split(r"(?<=[.!?])\s+", clean)
+    best_quote = ""
+    for c in clauses:
+        c_clean = c.strip(" \"'.,:;-")
+        if 12 <= len(c_clean) <= 45:
+            lower = c_clean.lower()
+            if any(re.search(pat, lower) for pat in [
+                r"\b(stalking|married|gun|stole|shoot|kill|cops|police|liar|cheat|money|cash|rich|dead|manager|ghost|ex\b)\b",
+                r"\b(supposed to|don't like me|who are you|leave me alone|look at this|find out|never seen|can't believe)\b",
+                r"\b(didn't start|ended it|got your gun|rich you're|hands)\b"
+            ]):
+                return c_clean
+            if "?" in c_clean and len(c_clean) >= 12:
+                best_quote = c_clean
+            elif not best_quote and 15 <= len(c_clean) <= 42:
+                best_quote = c_clean
+    return best_quote
 
 
 def clean_video_topic(raw_title: str) -> str:
@@ -330,6 +359,14 @@ def get_live_trending_hashtags(text: str, hook: str, variation: int = 0, video_t
         if t not in final_tags:
             final_tags.append(t)
 
+    # Strictly enforce topic brand consistency (never mix GTA 5 with GTA 6)
+    if core_topic == "GTA 6":
+        final_tags = [t for t in final_tags if not re.search(r"gta\s*5|gtav", t, re.I)]
+        if "#Gta6" not in final_tags:
+            final_tags.insert(0, "#Gta6")
+        if "#Gtavi" not in final_tags:
+            final_tags.insert(1, "#Gtavi")
+
     # Add 3 genre ranking tags
     for g in rotated_genre[:3]:
         if g not in final_tags:
@@ -360,48 +397,59 @@ def generate_live_viral_title(text: str, hook: str, index: int = 1, variation: i
     first_sentence = text_clean.split(".")[0].strip()
     first_q = hook_clean.split("?")[0].strip() + "?" if "?" in hook_clean else ""
     t_lower = text_clean.lower()
+    prefix = f"{core_topic} - " if core_topic else ""
 
-    # Identify clip event
-    clip_event = ""
-    if re.search(r"\b(car|stole|steal|driving|keys)\b", t_lower):
-        clip_event = "The Moment The Car Got Stolen"
+    quote = extract_punchy_quote(text_clean)
+
+    patterns = []
+
+    # 1. Quote-anchored title patterns (Highest CTR on YouTube Shorts)
+    if quote:
+        patterns.append(f'{prefix}"{quote}" {emoji}')
+        patterns.append(f'{prefix}When He Said: "{quote}" 💀')
+        patterns.append(f'{prefix}"{quote}" 🚨')
+
+    # 2. Key Action & Confrontation Events (Specific to what happened, not generic)
+    if re.search(r"\b(stalking|snapmatic)\b", t_lower):
+        patterns.append(f"{prefix}Caught Stalking On Snapmatic 📱💀")
+        patterns.append(f'{prefix}"I Think That\'s Called Stalking" 💀')
+    elif re.search(r"\b(marry|married|wedding)\b", t_lower):
+        patterns.append(f'{prefix}"We Were Supposed To Get Married!" 💍😭')
+        patterns.append(f"{prefix}Crazy Ex Confrontation Got Out of Hand 💀")
+    elif re.search(r"\b(rent|strong\s*box|asset)\b", t_lower):
+        patterns.append(f"{prefix}Collecting Rent In Vice City The Hard Way 💰🔫")
+        patterns.append(f'{prefix}"He Didn\'t Have Enough Cash For Rent" 💀')
+    elif re.search(r"\b(dive|diving|treasure|ocean)\b", t_lower):
+        patterns.append(f"{prefix}Hidden Ocean Treasure Hunt Revealed 🪙🌊")
+        patterns.append(f'{prefix}"How Rich You\'re Going To Be" 🤑')
+    elif re.search(r"\b(turf\s*war|kilos|cargo)\b", t_lower):
+        patterns.append(f'{prefix}"We Didn\'t Start It. We Ended It" 🥶')
+        patterns.append(f"{prefix}Vice City Turf War Escalates Fast 🚨")
+    elif re.search(r"\b(gun|armed)\b", t_lower):
+        patterns.append(f'{prefix}"You Got Your Gun On You?" 🔫👀')
+        patterns.append(f"{prefix}Meeting The Kingpin With Loaded Guns 💀")
+    elif re.search(r"\b(stole|stolen|mother's car)\b", t_lower):
+        patterns.append(f'{prefix}"I Stole It From My Mother" 🚗💀')
+        patterns.append(f"{prefix}The Moment The Car Got Stolen 🤯")
     elif re.search(r"\b(chase|police|cops|arrest|sirens)\b", t_lower):
-        clip_event = "When The Cops Showed Up"
-    elif re.search(r"\b(lucia|jason)\b", t_lower):
-        clip_event = "The Moment Lucia Realized"
-    elif re.search(r"\b(money|cash|dollars|paid|grant)\b", t_lower):
-        clip_event = "When A High-Stakes Job Turned Deadly"
+        patterns.append(f"{prefix}Caught Red-Handed By The Cops 🚨")
     elif re.search(r"\b(kiss|rizz|date|girlfriend|boyfriend)\b", t_lower):
-        clip_event = "Did That Pickup Line Actually Work?!"
-    elif re.search(r"\b(die|dead|killed|boss|fight)\b", t_lower):
-        clip_event = "Wait For This Insane Climax"
-    elif 18 <= len(first_sentence) <= 50:
-        clip_event = f'"{first_sentence}"'
+        patterns.append(f"{prefix}Did That Pickup Line Actually Work?! 💀")
 
-    # When core_topic is known (e.g. "GTA 6", "Minecraft", "Joe Rogan", etc.)
-    if core_topic:
-        patterns = []
-        if clip_event:
-            patterns.append(f"{core_topic} - {clip_event} {emoji}")
-            patterns.append(f"{core_topic}: {clip_event} 💀")
-        if 18 <= len(first_sentence) <= 55:
-            patterns.append(f"{core_topic} - \"{first_sentence}\" {emoji}")
-            patterns.append(f"{core_topic}: \"{first_sentence}\" 🚨")
-        if first_q and len(first_q) <= 55:
-            patterns.append(f"{core_topic}: {first_q} {emoji}")
-        patterns.append(f"Wait For This Insane {core_topic} Moment! {emoji}")
-        patterns.append(f"Did He Really Just Do That In {core_topic}?! 😱")
-        patterns.append(f"This {core_topic} Cutscene Changed Everything {emoji}")
-        patterns.append(f"{core_topic} Hits Different In Broad Daylight {emoji}")
+    if first_q and 15 <= len(first_q) <= 52:
+        patterns.append(f'{prefix}"{first_q}" {emoji}')
 
-        return patterns[variation % len(patterns)]
+    if 18 <= len(first_sentence) <= 52 and not WEAK_STARTERS.match(first_sentence):
+        patterns.append(f'{prefix}"{first_sentence}" {emoji}')
 
-    # Fallback if no core_topic identified
-    if 20 <= len(first_sentence) <= 65:
-        return f"\"{first_sentence}\" {emoji}"
-    if first_q and len(first_q) <= 65:
-        return f"{first_q} {emoji}"
-    return f"This Changed Everything In Seconds {emoji}"
+    # Discovery fallbacks
+    patterns.append(f"Wait For This Insane {core_topic or 'Gaming'} Moment! {emoji}")
+    patterns.append(f"Did He Really Just Do That In {core_topic or 'Vice City'}?! 😱")
+
+    selected_title = patterns[variation % len(patterns)]
+    # Clean any leftover bracket censorship artifacts
+    selected_title = re.sub(r"\[\s*__\s*\]|\[\s*Â__Â\s*\]", "...", selected_title)
+    return selected_title
 
 
 def generate_clip_metadata(text: str, hook: str, index: int = 1, variation: int = 0, video_title: str = "") -> Tuple[str, str]:
@@ -522,12 +570,14 @@ def generate_seo_description(
 
     # CRAFT THE FIRST 200 CHARACTERS (Crucial for YouTube SEO Algorithm):
     topic_label = core_topic if core_topic else "Gaming"
-    
+    quote = extract_punchy_quote(text_clean)
+    quote_snippet = f'"{quote}" - ' if quote else ""
+
     first_200_variants = [
-        f"Watch this intense {topic_label} moment featuring {clip_event}! Top {topic_label} gameplay clips, viral cutscenes, and high-stakes {event_keywords[:35]} in Ultra-HD 60 FPS.",
-        f"Unbelievable {topic_label} scene: {clip_event}! Catch the best {topic_label} viral shorts, intense {event_keywords[:30]}, and trending moments with 60 FPS animated karaoke captions.",
-        f"Did this really happen in {topic_label}?! Epic {clip_event} breakdown. Discover trending {topic_label} gameplay, crazy scenes, and viral video highlights in 1080x1920 60 FPS.",
-        f"The most intense {topic_label} moment yet! High-octane {clip_event} with {event_keywords[:40]}. Explore official {topic_label} viral highlights and clutch clips.",
+        f"{quote_snippet}Watch this intense {topic_label} scene: {clip_event}! Top {topic_label} gameplay cutscenes and high-stakes viral moments in Ultra-HD 60 FPS.",
+        f"Did this really happen in {topic_label}?! {quote_snippet}Catch the craziest {topic_label} viral highlights, dialogue clips, and story moments in 1080x1920 60 FPS.",
+        f"Unbelievable {topic_label} moment: {clip_event}! {quote_snippet}Trending {topic_label} gameplay clips and intense cutscenes with 60 FPS animated captions.",
+        f"The wildest {topic_label} confrontation yet! {quote_snippet}High-octane {clip_event} and clutch story highlights in Ultra-HD 60 FPS.",
     ]
 
     lead_paragraph = first_200_variants[variation % len(first_200_variants)]

@@ -60,7 +60,65 @@ try:
 except ImportError:
     youtube_uploader = None
 
-PYTHON_EXE = sys.executable
+try:
+    from ai_connector import (
+        get_ai_config,
+        save_ai_config,
+        test_ai_connection,
+        generate_ai_metadata,
+        parse_reedit_feedback_with_ai,
+        MODEL_PRESETS,
+    )
+except ImportError:
+    try:
+        from scripts.ai_connector import (
+            get_ai_config,
+            save_ai_config,
+            test_ai_connection,
+            generate_ai_metadata,
+            parse_reedit_feedback_with_ai,
+            MODEL_PRESETS,
+        )
+    except Exception:
+        get_ai_config = lambda: {"provider": "antigravity", "model": "gemini-3.8-flash-medium", "enabled": True}
+        save_ai_config = lambda c: True
+        test_ai_connection = lambda o=None: {"success": False, "error": "AI module unavailable"}
+        generate_ai_metadata = lambda *args, **kwargs: None
+        parse_reedit_feedback_with_ai = lambda *args, **kwargs: None
+        MODEL_PRESETS = {}
+
+try:
+    from audio_mixer import (
+        BGM_CATALOG,
+        SFX_CATALOG,
+        mix_audio_with_auto_ducking,
+        ai_select_audio,
+        search_internet_audio,
+        download_internet_audio,
+        get_downloaded_audio_catalog,
+    )
+except ImportError:
+    try:
+        from scripts.audio_mixer import (
+            BGM_CATALOG,
+            SFX_CATALOG,
+            mix_audio_with_auto_ducking,
+            ai_select_audio,
+            search_internet_audio,
+            download_internet_audio,
+            get_downloaded_audio_catalog,
+        )
+    except Exception:
+        BGM_CATALOG = {}
+        SFX_CATALOG = {}
+        mix_audio_with_auto_ducking = lambda **kwargs: kwargs.get("output_video")
+        ai_select_audio = lambda *args, **kwargs: {"bgm_track": "none", "hook_sfx": "none"}
+        search_internet_audio = lambda *args, **kwargs: []
+        download_internet_audio = lambda *args, **kwargs: {"success": False, "error": "Not available"}
+        get_downloaded_audio_catalog = lambda: []
+
+_venv_py = WORKSPACE_ROOT / ".venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+PYTHON_EXE = str(_venv_py) if _venv_py.exists() else sys.executable
 
 def find_binary(name: str, fallback_paths: list[str]) -> str:
     found = shutil.which(name)
@@ -451,6 +509,7 @@ def refresh_approved_clips():
                 "framing": framing,
                 "poster": f"/media/final/{base_name}.jpg" if thumb_file.exists() else "",
                 "size_mb": round(mp4.stat().st_size / (1024 * 1024), 2),
+                "updated_at": int(mp4.stat().st_mtime),
             })
     with state.lock:
         state.approved_clips = approved
@@ -664,8 +723,8 @@ def run_scan_pipeline(url: str, num_detect: int = 15, resume: bool = False):
             "--transcript", str(transcript_path),
             "--video-title", getattr(state, "source_title", ""),
             "--top-k", str(num_detect),
-            "--min-duration", "25",
-            "--max-duration", "55",
+            "--min-duration", "20",
+            "--max-duration", "42",
             "--start-after", str(start_after_sec),
             "--start-index", str(start_index),
             "--output", str(hooks_path),
@@ -687,6 +746,25 @@ def run_scan_pipeline(url: str, num_detect: int = 15, resume: bool = False):
 
         if not segments:
             raise RuntimeError(f"No viral segments met criteria (Resume filter was > {start_after_sec:.1f}s).")
+
+        # Auto-apply AI Recommended Subtitle / Caption Style if generated
+        ai_style_file = TEMP_DIR / "ai_caption_style.json"
+        if ai_style_file.exists():
+            try:
+                with open(ai_style_file, "r", encoding="utf-8") as f:
+                    c_style = json.load(f)
+                with state.lock:
+                    if c_style.get("theme"):
+                        state.subtitle_theme = c_style["theme"]
+                    if c_style.get("position"):
+                        state.subtitle_position = c_style["position"]
+                    if c_style.get("format"):
+                        state.subtitle_format = c_style["format"]
+                    if c_style.get("font"):
+                        state.subtitle_font = c_style["font"]
+                state.log(f"✨ [AI Stylist] Auto-applied optimal caption style: {c_style.get('theme', '').upper()} ({c_style.get('format', '').upper()}) - {c_style.get('reason', '')}")
+            except Exception:
+                pass
 
         timeframes_list = []
         for offset, seg in enumerate(segments):
@@ -713,6 +791,8 @@ def run_scan_pipeline(url: str, num_detect: int = 15, resume: bool = False):
                 "hashtags": hashtags,
                 "variation": 0,
                 "selected": offset < state.target_clips,
+                "ai_powered": seg.get("ai_powered", False),
+                "generated_by": seg.get("generated_by", ""),
             })
 
         with state.lock:
@@ -880,6 +960,29 @@ def run_render_worker(selected_moments: list[dict]):
                 state.log(f"Caption render error: {k_res.stderr[-300:]}")
                 raise RuntimeError(f"Caption render failed on clip {clip_id}")
 
+            # 2.5. Audio Director & Sidechain Auto-Ducking Mix
+            bgm_choice = tf.get("bgm_track", "auto")
+            bgm_vol = float(tf.get("bgm_volume", 0.16))
+            hook_sfx_choice = tf.get("hook_sfx", "whoosh_riser")
+            try:
+                temp_mixed_mp4 = TEMP_DIR / f"draft_mixed_{clip_id}.mp4"
+                mix_audio_with_auto_ducking(
+                    video_input=str(draft_clip_path),
+                    output_video=str(temp_mixed_mp4),
+                    bgm_track=bgm_choice,
+                    bgm_volume=bgm_vol,
+                    hook_sfx=hook_sfx_choice,
+                    clip_transcript=tf.get("full_text", tf.get("text", "")),
+                    clip_hook=tf.get("hook", ""),
+                    video_title=getattr(state, "source_title", ""),
+                    duration_sec=dur
+                )
+                if temp_mixed_mp4.exists() and temp_mixed_mp4.stat().st_size > 0:
+                    shutil.move(str(temp_mixed_mp4), str(draft_clip_path))
+                    state.log(f"🎵 AI Audio: Mixed {bgm_choice.upper()} (auto-ducked) + {hook_sfx_choice.upper()} SFX")
+            except Exception as aerr:
+                state.log(f"Audio mix note: {aerr}")
+
             # 3. Generate thumbnail poster & finalize clip state
             draft_thumb = DRAFT_DIR / f"clip_{clip_id}.jpg"
             generate_thumbnail(draft_clip_path, draft_thumb)
@@ -893,6 +996,9 @@ def run_render_worker(selected_moments: list[dict]):
                         d["render_pct"] = 100
                         d["size_mb"] = size_mb
                         d["poster"] = f"/media/draft/clip_{clip_id}.jpg" if draft_thumb.exists() else ""
+                        d["bgm_track"] = bgm_choice
+                        d["bgm_volume"] = bgm_vol
+                        d["hook_sfx"] = hook_sfx_choice
                 pct = 10 + int((idx / len(selected_moments)) * 85)
                 state.progress_pct = pct
 
@@ -1055,6 +1161,37 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(payload)
             return
 
+        if path == "/api/ai/config":
+            try:
+                cfg = get_ai_config()
+            except Exception as e:
+                cfg = {"provider": "antigravity", "model": "gemini-3.8-flash-medium", "enabled": True, "error": str(e)}
+            safe_cfg = dict(cfg)
+            if safe_cfg.get("api_key") and len(safe_cfg["api_key"]) > 8:
+                safe_cfg["api_key_masked"] = safe_cfg["api_key"][:4] + "..." + safe_cfg["api_key"][-4:]
+            payload = json.dumps(safe_cfg).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if path == "/api/ai/models":
+            try:
+                presets = dict(MODEL_PRESETS)
+            except Exception:
+                presets = {}
+            payload = json.dumps(presets).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
         if path == "/media/source":
             source_mp4 = TEMP_DIR / "source.mp4"
             self.send_file_with_range(source_mp4, "video/mp4")
@@ -1073,6 +1210,64 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
             mime = "image/jpeg" if filename.lower().endswith((".jpg", ".jpeg")) else "video/mp4"
             self.send_file_with_range(file_path, mime)
             return
+
+        if path == "/api/audio-catalog":
+            try:
+                catalog_data = {
+                    "bgm": BGM_CATALOG,
+                    "sfx": SFX_CATALOG
+                }
+            except Exception as e:
+                catalog_data = {"error": str(e), "bgm": {}, "sfx": {}}
+            payload = json.dumps(catalog_data).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        # Internet Audio & SFX Search Endpoint
+        if path == "/api/audio/search":
+            query_params = parse_qs(parsed.query)
+            q = query_params.get("q", [""])[0]
+            cat = query_params.get("category", ["bgm"])[0]
+            lim = int(query_params.get("limit", [8])[0])
+            try:
+                results = search_internet_audio(query=q, limit=lim, category=cat)
+            except Exception as e:
+                results = []
+            payload = json.dumps({"success": True, "query": q, "category": cat, "results": results}).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        # Downloaded Internet Audio Catalog
+        if path == "/api/audio/downloaded":
+            try:
+                items = get_downloaded_audio_catalog()
+            except Exception as e:
+                items = []
+            payload = json.dumps({"success": True, "items": items}).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if path.startswith("/media/audio/"):
+            rel_path = path.replace("/media/audio/", "").strip("/")
+            file_path = (WORKSPACE_ROOT / "assets" / "audio" / rel_path).resolve()
+            if file_path.exists() and file_path.is_file():
+                self.send_file_with_range(file_path, "audio/mpeg")
+                return
 
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -1310,14 +1505,40 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
             except Exception:
                 clip_idx = 1
 
-            meta_full = generate_clip_metadata_full(
-                text=text or hook,
-                hook=hook,
-                index=clip_idx,
-                variation=variation,
-                video_title=v_title,
-                timestamps=timestamps
-            )
+            # Attempt AI-powered generation first if enabled
+            ai_meta = None
+            try:
+                ai_meta = generate_ai_metadata(
+                    text=text or hook,
+                    hook=hook,
+                    video_title=v_title,
+                    timestamps=timestamps,
+                    variation=variation
+                )
+            except Exception as e:
+                ai_meta = None
+
+            if ai_meta and isinstance(ai_meta, dict) and ai_meta.get("title"):
+                meta_full = {
+                    "title": ai_meta["title"],
+                    "hashtags": ai_meta.get("hashtags", "#Shorts #Viral"),
+                    "description": ai_meta.get("description", ""),
+                    "first_200": ai_meta.get("first_200", (ai_meta.get("description", "")[:200])),
+                    "keywords": ai_meta.get("keywords", ["shorts", "viral"]),
+                    "variation": variation,
+                    "ai_powered": True,
+                    "generated_by": ai_meta.get("generated_by", "ai")
+                }
+            else:
+                meta_full = generate_clip_metadata_full(
+                    text=text or hook,
+                    hook=hook,
+                    index=clip_idx,
+                    variation=variation,
+                    video_title=v_title,
+                    timestamps=timestamps
+                )
+                meta_full["ai_powered"] = False
 
             if is_final:
                 target_fname = filename or f"clip_{clip_idx}.mp4"
@@ -1437,14 +1658,33 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
                 timestamps = f"{draft_info['start']:.2f}s - {draft_info['end']:.2f}s ({draft_info['duration']:.1f}s)" if draft_info else ""
                 framing = draft_info.get("framing", "1080x1920 60 FPS (Lanczos4 + Color Graded)")
 
-                # Generate full SEO description
-                desc, kws = generate_seo_description(
-                    text=draft_info.get("full_text", hook) if draft_info else hook,
-                    hook=hook,
-                    title=title,
-                    video_title=getattr(state, "source_title", ""),
-                    timestamps=timestamps
-                )
+                # Generate full SEO description using connected AI model if available
+                ai_meta = None
+                try:
+                    ai_meta = generate_ai_metadata(
+                        text=draft_info.get("full_text", hook) if draft_info else hook,
+                        hook=hook,
+                        video_title=getattr(state, "source_title", ""),
+                        timestamps=timestamps
+                    )
+                except Exception:
+                    ai_meta = None
+
+                if ai_meta and ai_meta.get("description"):
+                    desc = ai_meta["description"]
+                    kws = ai_meta.get("keywords", [])
+                    if ai_meta.get("title") and not meta.get("title"):
+                        title = ai_meta["title"]
+                    if ai_meta.get("hashtags") and not meta.get("hashtags"):
+                        hashtags = ai_meta["hashtags"]
+                else:
+                    desc, kws = generate_seo_description(
+                        text=draft_info.get("full_text", hook) if draft_info else hook,
+                        hook=hook,
+                        title=title,
+                        video_title=getattr(state, "source_title", ""),
+                        timestamps=timestamps
+                    )
 
                 save_clip_metadata_file(
                     txt_path=txt_file,
@@ -1512,14 +1752,33 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
             timestamps = f"{draft_info['start']:.2f}s - {draft_info['end']:.2f}s ({draft_info['duration']:.1f}s)" if draft_info else ""
             framing = draft_info.get("framing", "1080x1920 60 FPS (Lanczos4 + Color Graded)")
 
-            # Generate full SEO description
-            desc, kws = generate_seo_description(
-                text=draft_info.get("full_text", hook) if draft_info else hook,
-                hook=hook,
-                title=title,
-                video_title=getattr(state, "source_title", ""),
-                timestamps=timestamps
-            )
+            # Generate full SEO description using connected AI model if available
+            ai_meta = None
+            try:
+                ai_meta = generate_ai_metadata(
+                    text=draft_info.get("full_text", hook) if draft_info else hook,
+                    hook=hook,
+                    video_title=getattr(state, "source_title", ""),
+                    timestamps=timestamps
+                )
+            except Exception:
+                ai_meta = None
+
+            if ai_meta and ai_meta.get("description"):
+                desc = ai_meta["description"]
+                kws = ai_meta.get("keywords", [])
+                if ai_meta.get("title") and not req_data.get("title"):
+                    title = ai_meta["title"]
+                if ai_meta.get("hashtags") and not req_data.get("hashtags"):
+                    hashtags = ai_meta["hashtags"]
+            else:
+                desc, kws = generate_seo_description(
+                    text=draft_info.get("full_text", hook) if draft_info else hook,
+                    hook=hook,
+                    title=title,
+                    video_title=getattr(state, "source_title", ""),
+                    timestamps=timestamps
+                )
 
             save_clip_metadata_file(
                 txt_path=txt_file,
@@ -1736,6 +1995,287 @@ class StudioRequestHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(resp_bytes)
             return
 
+        # AI Model Connector: Save Configuration
+        if path == "/api/ai/save-config":
+            try:
+                data = json.loads(body) if body else {}
+                success = save_ai_config(data)
+                cfg = get_ai_config()
+                state.log(f"🧠 [AI Connector] Configuration updated: Provider={cfg.get('provider')} | Model={cfg.get('model')}")
+                resp_bytes = json.dumps({"success": success, "config": cfg}).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp_bytes)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(resp_bytes)
+                return
+            except Exception as e:
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(e))
+                return
+
+        # AI Model Connector: Ping / Test Connection
+        if path == "/api/ai/test":
+            try:
+                data = json.loads(body) if body else None
+                result = test_ai_connection(config_override=data)
+                resp_bytes = json.dumps(result).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp_bytes)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(resp_bytes)
+                return
+            except Exception as e:
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(e))
+                return
+
+        # AI Re-Edit Feedback Parser
+        if path == "/api/parse-reedit-feedback":
+            try:
+                data = json.loads(body) if body else {}
+                feedback = data.get("feedback", "").strip()
+                clip_info = data.get("clip_info", {})
+                v_title = data.get("video_title", getattr(state, "source_title", ""))
+                parsed = parse_reedit_feedback_with_ai(feedback, clip_info, video_title=v_title)
+                resp_bytes = json.dumps({"success": True, "result": parsed}).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp_bytes)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(resp_bytes)
+                return
+            except Exception as e:
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(e))
+                return
+
+        # Download / Fetch Audio from Internet URL or ID
+        if path == "/api/audio/fetch":
+            try:
+                data = json.loads(body) if body else {}
+                url = data.get("url", "").strip()
+                title = data.get("title", "").strip()
+                category = data.get("category", "bgm")
+                if not url:
+                    self.send_error(HTTPStatus.BAD_REQUEST, "Audio URL or ID is required")
+                    return
+                state.log(f"📥 [Audio Explorer] Downloading royalty-free audio: {title or url}...")
+                res = download_internet_audio(url_or_id=url, title=title, category=category)
+                if res.get("success"):
+                    state.log(f"✓ [Audio Explorer] Successfully fetched: {res.get('title')}")
+                else:
+                    state.log(f"❌ [Audio Explorer] Failed to fetch audio: {res.get('error')}")
+                resp_bytes = json.dumps(res).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp_bytes)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(resp_bytes)
+                return
+            except Exception as e:
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(e))
+                return
+
+        # Clip Re-Rendering Engine
+        if path == "/api/re-render-clip":
+            try:
+                data = json.loads(body) if body else {}
+                clip_id = data.get("clip_id")
+                folder = data.get("folder", "draft")
+                start_sec = float(data.get("start", 0.0))
+                end_sec = float(data.get("end", 30.0))
+                framing_mode = data.get("framing_mode", "auto")
+                sub_theme = data.get("subtitle_theme", getattr(state, "subtitle_theme", "hormozi"))
+                sub_format = data.get("subtitle_format", getattr(state, "subtitle_format", "karaoke"))
+                sub_position = data.get("subtitle_position", getattr(state, "subtitle_position", "bottom"))
+                title = data.get("title", f"Clip #{clip_id}")
+                hashtags = data.get("hashtags", "#Shorts #Viral")
+                hook = data.get("hook", "")
+                bgm_track = data.get("bgm_track", "auto")
+                bgm_vol = float(data.get("bgm_volume", 0.16))
+                hook_sfx = data.get("hook_sfx", "whoosh_riser")
+            except Exception as e:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid request JSON")
+                return
+
+            if end_sec <= start_sec:
+                self.send_error(HTTPStatus.BAD_REQUEST, "End time must be greater than start time")
+                return
+
+            source_mp4 = TEMP_DIR / "source.mp4"
+            if not source_mp4.exists():
+                self.send_error(HTTPStatus.BAD_REQUEST, "Source video (temp_work/source.mp4) is required for re-rendering.")
+                return
+
+            def _re_render_worker():
+                clip_filename = f"clip_{clip_id}.mp4"
+                target_dir = FINAL_DIR if folder == "final" else DRAFT_DIR
+                target_video = target_dir / clip_filename
+                cropped_mp4 = TEMP_DIR / f"re_crop_{clip_id}.mp4"
+                ass_path = TEMP_DIR / f"re_subs_{clip_id}.ass"
+                thumb_path = target_dir / f"clip_{clip_id}.jpg"
+                txt_path = target_dir / f"clip_{clip_id}.txt"
+
+                state.log(f"🎬 [Re-Edit Studio] Re-rendering {clip_filename} ({framing_mode.upper()}, {sub_theme.upper()})...")
+                state.log(f"Trim: {start_sec:.2f}s -> {end_sec:.2f}s ({end_sec - start_sec:.1f}s) | Title: {title}")
+
+                with state.lock:
+                    if folder == "draft":
+                        for d in state.draft_clips:
+                            if str(d.get("id")) == str(clip_id):
+                                d["status"] = "rendering"
+                                d["render_stage"] = f"Re-Rendering Crop ({framing_mode})..."
+                                d["render_pct"] = 20
+
+                try:
+                    # 1. Smart Crop
+                    crop_cmd = [
+                        PYTHON_EXE,
+                        str(SCRIPTS_DIR / "smart_crop.py"),
+                        "--input", str(source_mp4),
+                        "--output", str(cropped_mp4),
+                        "--start", str(start_sec),
+                        "--end", str(end_sec),
+                        "--mode", framing_mode,
+                    ]
+                    c_res = subprocess.run(crop_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+                    if c_res.returncode != 0:
+                        state.log(f"❌ Re-edit crop failed: {c_res.stderr[-300:]}")
+                        with state.lock:
+                            if folder == "draft":
+                                for d in state.draft_clips:
+                                    if str(d.get("id")) == str(clip_id):
+                                        d["status"] = "ready"
+                        return
+
+                    with state.lock:
+                        if folder == "draft":
+                            for d in state.draft_clips:
+                                if str(d.get("id")) == str(clip_id):
+                                    d["render_stage"] = f"Burning {sub_theme.upper()} Captions..."
+                                    d["render_pct"] = 55
+
+                    # 2. Render Captions
+                    transcript_path = TEMP_DIR / "transcript.json"
+                    captions_cmd = [
+                        PYTHON_EXE,
+                        str(SCRIPTS_DIR / "render_captions.py"),
+                        "--video", str(cropped_mp4),
+                        "--transcript", str(transcript_path),
+                        "--start", str(start_sec),
+                        "--end", str(end_sec),
+                        "--output", str(target_video),
+                        "--ass-output", str(ass_path),
+                        "--theme", sub_theme,
+                        "--position", sub_position,
+                        "--format", sub_format,
+                        "--fps", "60",
+                    ]
+                    k_res = subprocess.run(captions_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+                    if k_res.returncode != 0:
+                        state.log(f"❌ Re-edit caption render failed: {k_res.stderr[-300:]}")
+                        with state.lock:
+                            if folder == "draft":
+                                for d in state.draft_clips:
+                                    if str(d.get("id")) == str(clip_id):
+                                        d["status"] = "ready"
+                        return
+
+                    with state.lock:
+                        if folder == "draft":
+                            for d in state.draft_clips:
+                                if str(d.get("id")) == str(clip_id):
+                                    d["render_stage"] = f"Mixing AI Audio ({bgm_track.upper()})..."
+                                    d["render_pct"] = 85
+
+                    # 2.5 Audio Director & Sidechain Auto-Ducking Mix
+                    try:
+                        temp_re_mixed = TEMP_DIR / f"re_mixed_{clip_id}.mp4"
+                        mix_audio_with_auto_ducking(
+                            video_input=str(target_video),
+                            output_video=str(temp_re_mixed),
+                            bgm_track=bgm_track,
+                            bgm_volume=bgm_vol,
+                            hook_sfx=hook_sfx,
+                            clip_transcript=hook or title,
+                            clip_hook=hook,
+                            video_title=getattr(state, "source_title", ""),
+                            duration_sec=end_sec - start_sec
+                        )
+                        if temp_re_mixed.exists() and temp_re_mixed.stat().st_size > 0:
+                            shutil.move(str(temp_re_mixed), str(target_video))
+                            state.log(f"🎵 [Re-Edit Studio] Audio mix complete: BGM={bgm_track.upper()} + SFX={hook_sfx.upper()}")
+                    except Exception as aerr:
+                        state.log(f"Re-edit audio mix note: {aerr}")
+
+                    # 3. Thumbnail & Metadata
+                    generate_thumbnail(target_video, thumb_path)
+                    timestamps_str = f"{start_sec:.2f}s - {end_sec:.2f}s ({end_sec - start_sec:.1f}s)"
+
+                    desc, kws = generate_seo_description(
+                        text=hook or title,
+                        hook=hook,
+                        title=title,
+                        video_title=getattr(state, "source_title", ""),
+                        timestamps=timestamps_str
+                    )
+
+                    save_clip_metadata_file(
+                        txt_path=txt_path,
+                        clip_num=clip_id,
+                        filename=clip_filename,
+                        timestamps=timestamps_str,
+                        hook=hook,
+                        framing=f"1080x1920 60 FPS ({framing_mode})",
+                        title=title,
+                        hashtags=hashtags,
+                        description=desc,
+                        keywords=kws
+                    )
+
+                    now_ts = int(time.time())
+                    with state.lock:
+                        if folder == "draft":
+                            for d in state.draft_clips:
+                                if str(d.get("id")) == str(clip_id):
+                                    d["status"] = "ready"
+                                    d["render_stage"] = "Render Complete ✓"
+                                    d["render_pct"] = 100
+                                    d["updated_at"] = now_ts
+                                    d["start"] = start_sec
+                                    d["end"] = end_sec
+                                    d["duration"] = round(end_sec - start_sec, 1)
+                                    d["title"] = title
+                                    d["hashtags"] = hashtags
+                                    d["hook"] = hook
+                                    d["framing_mode"] = framing_mode
+                                    d["subtitle_theme"] = sub_theme
+                                    d["subtitle_format"] = sub_format
+                                    d["bgm_track"] = bgm_track
+                                    d["bgm_volume"] = bgm_vol
+                                    d["hook_sfx"] = hook_sfx
+                                    d["size_mb"] = round(target_video.stat().st_size / (1024 * 1024), 2)
+                        refresh_approved_clips()
+
+                    state.log(f"✓ [Re-Edit Studio] Successfully re-rendered {clip_filename}! Updated in {folder}_clips/.")
+                except Exception as ex:
+                    state.log(f"❌ Re-edit error: {str(ex)}")
+
+            t = threading.Thread(target=_re_render_worker, daemon=True)
+            t.start()
+
+            resp_bytes = json.dumps({"success": True, "message": "Re-rendering started"}).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp_bytes)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(resp_bytes)
+            return
+
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def log_message(self, format, *args):
@@ -1917,6 +2457,13 @@ HTML_PAGE = """<!DOCTYPE html>
       </div>
     </div>
     <div class="flex items-center space-x-3">
+      <!-- AI Model Connector Pill -->
+      <button id="aiModelBtn" onclick="openAIModal()" class="px-3.5 py-1.5 rounded-full text-xs font-semibold border border-purple-800/60 bg-purple-950/40 text-purple-300 hover:bg-purple-900/60 hover:text-white transition-all flex items-center space-x-2 cursor-pointer shadow-sm">
+        <i class="fa-solid fa-brain text-purple-400 text-sm"></i>
+        <span id="aiBtnLabel">AI: Antigravity</span>
+        <span id="aiActiveDot" class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+      </button>
+
       <!-- YouTube Studio Connect Pill -->
       <button id="ytConnectBtn" onclick="openYouTubeModal()" class="px-3.5 py-1.5 rounded-full text-xs font-semibold border border-red-900/60 bg-red-950/40 text-red-300 hover:bg-red-900/60 hover:text-white transition-all flex items-center space-x-2 cursor-pointer shadow-sm">
         <i class="fa-brands fa-youtube text-red-500 text-sm"></i>
@@ -2304,6 +2851,10 @@ HTML_PAGE = """<!DOCTYPE html>
                 <h3 class="text-xs font-bold uppercase tracking-wider text-zinc-200 flex items-center space-x-2">
                   <i class="fa-solid fa-fire text-amber-500"></i>
                   <span>Detected Hot Moments (Select To Clip)</span>
+                  <span id="aiMomentsBadge" class="text-[10px] px-2.5 py-0.5 rounded-full border border-purple-700/60 bg-purple-950/40 text-purple-300 font-bold flex items-center space-x-1.5 shadow-sm">
+                    <i class="fa-solid fa-brain text-[10px] text-purple-400"></i>
+                    <span id="aiMomentsLabel">AI Model Active</span>
+                  </span>
                 </h3>
                 <p class="text-[11px] text-zinc-400 mt-0.5">Click any card to preview in player. Check the clips you want to render.</p>
               </div>
@@ -2741,6 +3292,447 @@ HTML_PAGE = """<!DOCTYPE html>
           <button id="publishSubmitBtn" type="button" onclick="submitPublishToYouTube()" class="bg-gradient-to-r from-red-600 via-rose-600 to-red-600 hover:from-red-500 hover:to-rose-500 text-white px-5 py-2.5 rounded-xl text-xs font-bold shadow-lg shadow-red-600/30 flex items-center space-x-2 transition-all active:scale-[0.98] cursor-pointer">
             <i class="fa-brands fa-youtube text-sm"></i>
             <span>Upload Short to YouTube</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI Model Connector Modal -->
+    <div id="aiModal" class="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4 hidden">
+      <div class="bg-zinc-900 border border-purple-800/60 rounded-2xl max-w-2xl w-full p-6 shadow-2xl relative space-y-4 max-h-[92vh] overflow-y-auto">
+        <!-- Modal Header -->
+        <div class="flex items-center justify-between border-b border-zinc-800 pb-3">
+          <div class="flex items-center space-x-3">
+            <div class="w-10 h-10 rounded-xl bg-purple-600/20 border border-purple-500/40 flex items-center justify-center text-purple-400 text-lg shadow-md">
+              <i class="fa-solid fa-brain"></i>
+            </div>
+            <div>
+              <h3 class="text-base font-bold text-white flex items-center space-x-2">
+                <span>AI Model Connector</span>
+                <span id="aiActiveBadge" class="text-[10px] bg-purple-600/40 text-purple-200 border border-purple-500/50 px-2 py-0.5 rounded-full font-bold uppercase">ANTIGRAVITY</span>
+              </h3>
+              <p class="text-xs text-zinc-400">Powering Ultra-Viral Hooks, Retention Scoring, Titles &amp; YouTube SEO Metadata</p>
+            </div>
+          </div>
+          <button onclick="closeAIModal()" class="text-zinc-400 hover:text-white text-lg px-2 py-1 cursor-pointer">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+
+        <!-- Provider Selection Pills -->
+        <div>
+          <label class="text-[11px] font-bold text-zinc-400 uppercase tracking-wider block mb-2">Select AI Engine / Provider</label>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2" id="aiProviderGrid">
+            <button type="button" onclick="selectAIProvider('antigravity')" data-provider="antigravity" class="ai-prov-btn p-2.5 rounded-xl border text-left transition-all bg-purple-950/50 border-purple-500 text-white shadow-sm ring-1 ring-purple-500/50 cursor-pointer">
+              <div class="flex items-center space-x-1.5 font-bold text-xs"><i class="fa-solid fa-bolt text-amber-400"></i><span>Antigravity</span></div>
+              <div class="text-[10px] text-zinc-400 mt-0.5">Native CLI (Zero-Key)</div>
+            </button>
+            <button type="button" onclick="selectAIProvider('gemini')" data-provider="gemini" class="ai-prov-btn p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer">
+              <div class="flex items-center space-x-1.5 font-bold text-xs"><i class="fa-brands fa-google text-blue-400"></i><span>Google Gemini</span></div>
+              <div class="text-[10px] text-zinc-400 mt-0.5">Flash 2.5 / Pro 1.5</div>
+            </button>
+            <button type="button" onclick="selectAIProvider('openai')" data-provider="openai" class="ai-prov-btn p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer">
+              <div class="flex items-center space-x-1.5 font-bold text-xs"><i class="fa-solid fa-cube text-emerald-400"></i><span>OpenAI</span></div>
+              <div class="text-[10px] text-zinc-400 mt-0.5">GPT-4o / Mini / o1</div>
+            </button>
+            <button type="button" onclick="selectAIProvider('anthropic')" data-provider="anthropic" class="ai-prov-btn p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer">
+              <div class="flex items-center space-x-1.5 font-bold text-xs"><i class="fa-solid fa-shield-halved text-orange-400"></i><span>Anthropic</span></div>
+              <div class="text-[10px] text-zinc-400 mt-0.5">Claude 3.5 Sonnet</div>
+            </button>
+            <button type="button" onclick="selectAIProvider('groq')" data-provider="groq" class="ai-prov-btn p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer">
+              <div class="flex items-center space-x-1.5 font-bold text-xs"><i class="fa-solid fa-gauge-high text-red-400"></i><span>Groq Cloud</span></div>
+              <div class="text-[10px] text-zinc-400 mt-0.5">Llama 3.3 70B (Fast)</div>
+            </button>
+            <button type="button" onclick="selectAIProvider('ollama')" data-provider="ollama" class="ai-prov-btn p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer">
+              <div class="flex items-center space-x-1.5 font-bold text-xs"><i class="fa-solid fa-laptop-code text-cyan-400"></i><span>Local Ollama</span></div>
+              <div class="text-[10px] text-zinc-400 mt-0.5">Offline / Self-Hosted</div>
+            </button>
+            <button type="button" onclick="selectAIProvider('custom')" data-provider="custom" class="ai-prov-btn p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer col-span-2">
+              <div class="flex items-center space-x-1.5 font-bold text-xs"><i class="fa-solid fa-server text-purple-400"></i><span>Custom OpenAI-Compatible</span></div>
+              <div class="text-[10px] text-zinc-400 mt-0.5">DeepSeek / OpenRouter / LM Studio / vLLM</div>
+            </button>
+          </div>
+        </div>
+
+        <!-- Antigravity Native Info Banner (shown when provider == 'antigravity') -->
+        <div id="aiAgyBanner" class="p-3.5 bg-gradient-to-r from-purple-950/60 to-indigo-950/60 border border-purple-700/50 rounded-xl space-y-1.5 text-xs text-purple-200">
+          <div class="font-bold flex items-center space-x-1.5 text-white">
+            <i class="fa-solid fa-circle-check text-emerald-400"></i>
+            <span>Antigravity Native Bridge Active</span>
+          </div>
+          <p class="text-[11px] text-purple-300/90 leading-relaxed">
+            Connected directly to your local Antigravity runtime (<code class="bg-black/50 px-1 py-0.5 rounded text-amber-300">agy.exe</code>). Zero configuration or API keys needed. Generates viral hooks and titles using native AI inference!
+          </p>
+        </div>
+
+        <!-- Model Selection & Presets -->
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <label class="text-xs font-bold text-zinc-300 uppercase tracking-wider">AI Model</label>
+            <span id="aiModelHint" class="text-[10px] text-zinc-500">Pick preset or type model identifier</span>
+          </div>
+          <div class="flex space-x-2">
+            <input type="text" id="aiModelInput" placeholder="Model identifier (e.g. gemini-3.8-flash-medium)" 
+              class="flex-1 bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-3 py-2 text-white font-mono text-xs">
+          </div>
+          <div class="flex flex-wrap gap-1.5 pt-1" id="aiModelPresetsContainer">
+            <!-- Dynamic model pills inserted by JS -->
+          </div>
+        </div>
+
+        <!-- API Key & Base URL Fields -->
+        <div id="aiCredentialsSection" class="space-y-3 hidden">
+          <div id="aiApiKeyRow">
+            <div class="flex items-center justify-between mb-1">
+              <label class="text-xs font-bold text-zinc-300 uppercase tracking-wider">API Key</label>
+              <span id="aiKeyStatusHint" class="text-[10px] text-zinc-500">Saved securely in ai_config.json</span>
+            </div>
+            <div class="relative">
+              <input type="password" id="aiApiKeyInput" placeholder="Enter API Key (sk-...)" 
+                class="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-3 py-2 pr-10 text-white font-mono text-xs">
+              <button type="button" onclick="toggleApiKeyVisibility()" class="absolute right-3 top-2.5 text-zinc-400 hover:text-white text-xs cursor-pointer">
+                <i id="aiKeyEyeIcon" class="fa-solid fa-eye"></i>
+              </button>
+            </div>
+          </div>
+
+          <div id="aiBaseUrlRow" class="hidden">
+            <label class="text-xs font-bold text-zinc-300 uppercase tracking-wider block mb-1">Base URL / Endpoint Host</label>
+            <input type="text" id="aiBaseUrlInput" placeholder="http://localhost:11434 or https://api.deepseek.com/v1" 
+              class="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-3 py-2 text-white font-mono text-xs">
+          </div>
+        </div>
+
+        <!-- Connection Test & Status Display -->
+        <div id="aiTestResultBox" class="hidden p-3.5 rounded-xl border text-xs space-y-1">
+          <!-- Dynamic test result info -->
+        </div>
+
+        <!-- Bottom Actions -->
+        <div class="border-t border-zinc-800 pt-3 flex items-center justify-between">
+          <div class="flex items-center space-x-2">
+            <button id="aiTestBtn" type="button" onclick="testAIConnection()" class="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 hover:text-white px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer flex items-center space-x-1.5 transition-all">
+              <i class="fa-solid fa-plug text-zinc-400"></i>
+              <span>Test Connection</span>
+            </button>
+            <label class="flex items-center space-x-1.5 text-xs text-zinc-400 cursor-pointer select-none">
+              <input type="checkbox" id="aiEnabledToggle" checked class="rounded border-zinc-700 text-purple-600 focus:ring-0 bg-zinc-950">
+              <span>Enable for Clips</span>
+            </label>
+          </div>
+          <div class="flex items-center space-x-2">
+            <button type="button" onclick="closeAIModal()" class="bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer">
+              Cancel
+            </button>
+            <button id="aiSaveBtn" type="button" onclick="saveAIConfig()" class="bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-600 hover:from-purple-500 hover:to-indigo-500 text-white px-5 py-2 rounded-xl text-xs font-bold shadow-lg shadow-purple-600/30 flex items-center space-x-1.5 transition-all active:scale-[0.98] cursor-pointer">
+              <i class="fa-solid fa-floppy-disk text-xs"></i>
+              <span>Save &amp; Apply</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Re-Edit Reel Studio Modal (AI-Powered) -->
+    <div id="reeditModal" class="fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-4 hidden">
+      <div class="bg-zinc-900 border border-purple-800/80 rounded-2xl max-w-2xl w-full p-6 shadow-2xl relative space-y-4 max-h-[92vh] overflow-y-auto">
+        <!-- Header -->
+        <div class="flex items-center justify-between border-b border-zinc-800 pb-3">
+          <div class="flex items-center space-x-3">
+            <div class="w-10 h-10 rounded-xl bg-purple-600/20 border border-purple-500/40 flex items-center justify-center text-purple-400 text-lg shadow-md">
+              <i class="fa-solid fa-wand-magic-sparkles"></i>
+            </div>
+            <div>
+              <h3 class="text-base font-bold text-white flex items-center space-x-2">
+                <span>Re-Edit Reel Studio</span>
+                <span id="reeditClipBadge" class="text-[10px] bg-purple-600/30 text-purple-200 border border-purple-500/40 px-2 py-0.5 rounded-full font-mono font-bold">CLIP #1</span>
+              </h3>
+              <p class="text-xs text-zinc-400">Streamer Split-Screen • 16:9 Blurred Fill • AI Feedback &amp; Precision Trimming</p>
+            </div>
+          </div>
+          <button onclick="closeReEditModal()" class="text-zinc-400 hover:text-white text-lg px-2 py-1 cursor-pointer">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+
+        <!-- Video Preview & Timing Summary -->
+        <div class="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center bg-zinc-950 p-3 rounded-xl border border-zinc-800">
+          <div class="sm:col-span-4 aspect-[9/16] max-h-[170px] bg-black rounded-lg overflow-hidden border border-zinc-800 flex items-center justify-center mx-auto">
+            <video id="reeditVideoPreview" controls playsinline class="w-full h-full object-contain"></video>
+          </div>
+          <div class="sm:col-span-8 space-y-2 text-xs">
+            <div class="font-bold text-white text-sm" id="reeditTitleDisplay">Clip Title</div>
+            <div class="text-[11px] text-zinc-400">Opening Hook: <span id="reeditHookDisplay" class="text-zinc-300 italic">"..."</span></div>
+            <div class="flex items-center space-x-2 text-[11px] font-mono text-zinc-400">
+              <span class="bg-zinc-900 px-2 py-0.5 rounded border border-zinc-800" id="reeditTimingBadge">0.0s - 30.0s</span>
+              <span class="bg-purple-950/80 text-purple-300 px-2 py-0.5 rounded border border-purple-800/80" id="reeditDurationBadge">30.0s</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- AI Director Feedback Field (Optional) -->
+        <div class="space-y-1.5 p-3.5 bg-gradient-to-r from-purple-950/40 to-indigo-950/40 border border-purple-800/60 rounded-xl">
+          <div class="flex items-center justify-between">
+            <label class="text-xs font-bold text-purple-200 uppercase tracking-wider flex items-center space-x-1.5">
+              <i class="fa-solid fa-brain text-purple-400"></i>
+              <span>AI Director Instructions / Feedback (Optional)</span>
+            </label>
+            <span class="text-[10px] text-purple-300/80">Natural language editing</span>
+          </div>
+          <textarea id="reeditFeedbackInput" rows="2" 
+            placeholder='e.g., "Make it streamer split-screen with facecam on top", "Trim first 2s to start right on the crash", "Switch captions to MrBeast Lime style", "Make it start when he says wait"'
+            class="w-full bg-zinc-950/90 border border-purple-700/50 focus:border-purple-400 rounded-xl p-2.5 text-xs text-zinc-200 placeholder-zinc-500 font-sans"></textarea>
+          <div class="flex items-center justify-between pt-1">
+            <span class="text-[10px] text-zinc-400">Tell AI how you want the reel to feel, or adjust the controls manually below:</span>
+            <button id="reeditApplyAIBtn" type="button" onclick="applyAIFeedbackToReEdit()" class="bg-purple-600 hover:bg-purple-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow-md transition-all flex items-center space-x-1.5 cursor-pointer">
+              <i class="fa-solid fa-wand-magic-sparkles text-xs"></i>
+              <span>Apply AI Feedback</span>
+            </button>
+          </div>
+          <div id="reeditAINoteBox" class="hidden text-[11px] p-2 bg-purple-950/80 border border-purple-700/80 text-purple-200 rounded-lg"></div>
+        </div>
+
+        <!-- Video Framing Layout Selector -->
+        <div>
+          <label class="text-[11px] font-bold text-zinc-400 uppercase tracking-wider block mb-2">Video Framing Layout (Instagram Reels / Shorts)</label>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2" id="reeditFramingGrid">
+            <button type="button" onclick="selectReEditFraming('split-streamer')" data-mode="split-streamer" class="reedit-mode-btn p-2.5 rounded-xl border text-left transition-all bg-purple-950/50 border-purple-500 text-white shadow-sm ring-1 ring-purple-500/50 cursor-pointer">
+              <div class="font-bold text-xs flex items-center space-x-1.5 text-purple-300">
+                <i class="fa-solid fa-table-columns"></i>
+                <span>Streamer Split</span>
+              </div>
+              <div class="text-[10px] text-zinc-400 mt-1 leading-tight">Facecam 36% Top + Game 64% Bottom</div>
+            </button>
+
+            <button type="button" onclick="selectReEditFraming('pillarbox')" data-mode="pillarbox" class="reedit-mode-btn p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer">
+              <div class="font-bold text-xs flex items-center space-x-1.5 text-blue-400">
+                <i class="fa-solid fa-film"></i>
+                <span>Blurred Fill</span>
+              </div>
+              <div class="text-[10px] text-zinc-400 mt-1 leading-tight">16:9 Centered with Blurred Backdrop</div>
+            </button>
+
+            <button type="button" onclick="selectReEditFraming('crop-fullscreen')" data-mode="crop-fullscreen" class="reedit-mode-btn p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer">
+              <div class="font-bold text-xs flex items-center space-x-1.5 text-emerald-400">
+                <i class="fa-solid fa-crop-simple"></i>
+                <span>9:16 Action Fill</span>
+              </div>
+              <div class="text-[10px] text-zinc-400 mt-1 leading-tight">Full-Screen Dynamic Action Crop</div>
+            </button>
+
+            <button type="button" onclick="selectReEditFraming('auto')" data-mode="auto" class="reedit-mode-btn p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer">
+              <div class="font-bold text-xs flex items-center space-x-1.5 text-amber-400">
+                <i class="fa-solid fa-robot"></i>
+                <span>Auto Tracking</span>
+              </div>
+              <div class="text-[10px] text-zinc-400 mt-1 leading-tight">AI Face &amp; Action Tracking</div>
+            </button>
+          </div>
+        </div>
+
+        <!-- Precise Timing & Trim Controls -->
+        <div class="p-3.5 bg-zinc-950 rounded-xl border border-zinc-800 space-y-2.5">
+          <div class="flex items-center justify-between">
+            <label class="text-xs font-bold text-zinc-300 uppercase tracking-wider">Trim Clip Start &amp; End</label>
+            <span id="reeditDurationCalculated" class="text-xs font-mono font-bold text-amber-400">Duration: 30.0s</span>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-[10px] text-zinc-400 block mb-1">Start Time (Seconds):</label>
+              <div class="flex items-center space-x-1.5">
+                <button type="button" onclick="adjustReEditTime('start', -1.0)" class="px-2 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-xs font-mono text-zinc-300 cursor-pointer">-1s</button>
+                <input type="number" id="reeditStartInput" step="0.1" oninput="updateReEditDurationDisplay()"
+                  class="flex-1 bg-zinc-900 border border-zinc-800 focus:border-purple-500 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono text-center">
+                <button type="button" onclick="adjustReEditTime('start', +1.0)" class="px-2 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-xs font-mono text-zinc-300 cursor-pointer">+1s</button>
+              </div>
+            </div>
+            <div>
+              <label class="text-[10px] text-zinc-400 block mb-1">End Time (Seconds):</label>
+              <div class="flex items-center space-x-1.5">
+                <button type="button" onclick="adjustReEditTime('end', -1.0)" class="px-2 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-xs font-mono text-zinc-300 cursor-pointer">-1s</button>
+                <input type="number" id="reeditEndInput" step="0.1" oninput="updateReEditDurationDisplay()"
+                  class="flex-1 bg-zinc-900 border border-zinc-800 focus:border-purple-500 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono text-center">
+                <button type="button" onclick="adjustReEditTime('end', +1.0)" class="px-2 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-xs font-mono text-zinc-300 cursor-pointer">+1s</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Caption Style & Format Overrides -->
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div>
+            <label class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block mb-1">Caption Color Theme</label>
+            <select id="reeditThemeSelect" class="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-2.5 py-2 text-xs text-white cursor-pointer">
+              <option value="hormozi">Hormozi Gold (#FFD700)</option>
+              <option value="mrbeast">MrBeast Lime (#33FF00)</option>
+              <option value="cyber">Cyber Cyan (#00FFFF)</option>
+              <option value="crimson">Crimson Red (#FF2233)</option>
+              <option value="sunset">Sunset Orange (#FF7700)</option>
+              <option value="bubblegum">Bubblegum Pink (#FF1493)</option>
+              <option value="violet">Electric Violet (#BF00FF)</option>
+              <option value="classic_white">Classic White (#FFFFFF)</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block mb-1">Caption Animation</label>
+            <select id="reeditFormatSelect" class="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-2.5 py-2 text-xs text-white cursor-pointer">
+              <option value="karaoke">Word-by-Word Karaoke</option>
+              <option value="single_word">Single Word Pop-In</option>
+              <option value="boxed_pill">Dark Boxed Pill</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block mb-1">Position on Screen</label>
+            <select id="reeditPositionSelect" class="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-2.5 py-2 text-xs text-white cursor-pointer">
+              <option value="bottom" selected>Bottom Safe Margin</option>
+              <option value="center">Center Punchy</option>
+              <option value="top">Top Header Banner</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Audio & Sound Effects (100% Royalty-Free) -->
+        <div class="p-3.5 bg-gradient-to-r from-zinc-950 to-zinc-900 border border-purple-900/50 rounded-xl space-y-3">
+          <div class="flex items-center justify-between">
+            <label class="text-xs font-bold text-purple-300 uppercase tracking-wider flex items-center space-x-1.5">
+              <i class="fa-solid fa-music text-purple-400"></i>
+              <span>Royalty-Free Audio &amp; Sound Effects</span>
+            </label>
+            <span class="text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800/80 px-2 py-0.5 rounded font-bold font-mono">100% Monetizable</span>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <!-- BGM Selector -->
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <label class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Background Music (Sidechain Ducked)</label>
+                <button type="button" onclick="previewAudioTrack('bgm')" class="text-[10px] text-purple-400 hover:text-purple-300 flex items-center space-x-1 cursor-pointer">
+                  <i class="fa-solid fa-volume-high"></i>
+                  <span id="bgmPlayLabel">Preview</span>
+                </button>
+              </div>
+              <select id="reeditBgmSelect" onchange="onBgmSelectionChange()" class="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-2.5 py-2 text-xs text-white cursor-pointer">
+                <option value="auto">✨ AI Auto-Decide (Recommended)</option>
+                <option value="romantic_piano">Romantic Acoustic Piano (Love / Emotional / Sentimental)</option>
+                <option value="intense_cinematic">Intense Cinematic War Drums (Trailer / Epic Action)</option>
+                <option value="phonk_drift">Phonk Drift (140BPM High-Energy)</option>
+                <option value="dark_tension">Dark Tension Synth (GTA / Suspense)</option>
+                <option value="epic_hype">Epic Trap Hype (808 Bass / Big Plays)</option>
+                <option value="lofi_chill">Lo-Fi Story Chill (Warm Chords)</option>
+                <option value="quirky_bounce">Quirky Comedy Bounce (Pizzicato / Fails)</option>
+                <option value="none">None (Clean Original Audio Only)</option>
+                <optgroup label="🌐 Downloaded Internet Audio" id="reeditDownloadedBgmGroup"></optgroup>
+              </select>
+            </div>
+
+            <!-- Hook SFX Selector -->
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <label class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Opening Hook SFX (0:00 Accent)</label>
+                <button type="button" onclick="previewAudioTrack('sfx')" class="text-[10px] text-purple-400 hover:text-purple-300 flex items-center space-x-1 cursor-pointer">
+                  <i class="fa-solid fa-volume-high"></i>
+                  <span id="sfxPlayLabel">Preview</span>
+                </button>
+              </div>
+              <select id="reeditSfxSelect" onchange="onSfxSelectionChange()" class="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-2.5 py-2 text-xs text-white cursor-pointer">
+                <option value="auto">✨ AI Auto-Decide (Recommended)</option>
+                <option value="romantic_sparkle">Romantic Sparkle &amp; Chime (Sweet / Realization)</option>
+                <option value="heartbeat_thud">Intense Heartbeat Thud (Suspense / Tension)</option>
+                <option value="whoosh_riser">Cinematic Whoosh Riser (Attention Grab)</option>
+                <option value="vine_boom">Vine Boom Sub-Thud (Impact / Shock)</option>
+                <option value="pop_ding">Crystal Pop &amp; Bell Ding (Reward / Win)</option>
+                <option value="record_scratch">Vinyl Record Scratch (Plot Twist / Awkward)</option>
+                <option value="none">None</option>
+                <optgroup label="🌐 Downloaded Internet SFX" id="reeditDownloadedSfxGroup"></optgroup>
+              </select>
+            </div>
+          </div>
+
+          <!-- BGM Volume Slider & Auto-Ducking Info -->
+          <div class="flex items-center justify-between pt-1 border-t border-zinc-800/80 text-[11px]">
+            <div class="flex items-center space-x-2 text-zinc-400">
+              <span>BGM Volume:</span>
+              <input type="range" id="reeditBgmVolRange" min="5" max="35" value="16" oninput="document.getElementById('reeditBgmVolLabel').textContent = this.value + '%'" class="w-24 accent-purple-500 cursor-pointer">
+              <span id="reeditBgmVolLabel" class="font-mono text-purple-300 font-bold">16%</span>
+            </div>
+            <span class="text-[10px] text-zinc-500 flex items-center">
+              <i class="fa-solid fa-shield-halved text-emerald-400 mr-1"></i>
+              Speech auto-ducking (-18dB) preserves voice clarity
+            </span>
+          </div>
+
+          <!-- Internet Royalty-Free Audio & SFX Explorer -->
+          <div class="mt-3 pt-3 border-t border-purple-900/60 space-y-2.5">
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] font-bold text-zinc-200 flex items-center space-x-1.5">
+                <i class="fa-solid fa-globe text-cyan-400"></i>
+                <span>Explore Internet Royalty-Free Sounds</span>
+              </span>
+              <span class="text-[10px] text-zinc-400">Scroll, preview &amp; use in 1-click</span>
+            </div>
+
+            <!-- Quick Mood Tags -->
+            <div class="flex flex-wrap gap-1.5 text-[10px]">
+              <button type="button" onclick="quickAudioSearch('romantic piano love', 'bgm')" class="px-2 py-0.5 rounded-full bg-rose-950/60 border border-rose-700/60 text-rose-300 hover:text-white hover:bg-rose-900/60 cursor-pointer">❤️ Romantic Piano</button>
+              <button type="button" onclick="quickAudioSearch('intense cinematic war drums', 'bgm')" class="px-2 py-0.5 rounded-full bg-amber-950/60 border border-amber-700/60 text-amber-300 hover:text-white hover:bg-amber-900/60 cursor-pointer">🔥 Intense War</button>
+              <button type="button" onclick="quickAudioSearch('phonk aggressive drift', 'bgm')" class="px-2 py-0.5 rounded-full bg-purple-950/60 border border-purple-700/60 text-purple-300 hover:text-white hover:bg-purple-900/60 cursor-pointer">⚡ Phonk Drift</button>
+              <button type="button" onclick="quickAudioSearch('suspense thriller drone', 'bgm')" class="px-2 py-0.5 rounded-full bg-blue-950/60 border border-blue-700/60 text-blue-300 hover:text-white hover:bg-blue-900/60 cursor-pointer">🎬 Dark Suspense</button>
+              <button type="button" onclick="quickAudioSearch('funny comedy background', 'bgm')" class="px-2 py-0.5 rounded-full bg-emerald-950/60 border border-emerald-700/60 text-emerald-300 hover:text-white hover:bg-emerald-900/60 cursor-pointer">😂 Comedy</button>
+              <button type="button" onclick="quickAudioSearch('lofi chill beats', 'bgm')" class="px-2 py-0.5 rounded-full bg-zinc-900 border border-zinc-700 text-zinc-300 hover:text-white cursor-pointer">☕ Lo-Fi Chill</button>
+              <button type="button" onclick="quickAudioSearch('cinematic impact whoosh boom', 'sfx')" class="px-2 py-0.5 rounded-full bg-indigo-950/60 border border-indigo-700/60 text-indigo-300 hover:text-white cursor-pointer">💥 Viral SFX</button>
+            </div>
+
+            <!-- Search & Link Input -->
+            <div class="flex items-center space-x-2">
+              <div class="relative flex-1">
+                <input type="text" id="internetAudioSearchInput" 
+                  placeholder="Search mood (e.g. intense cinematic, romantic violin, phonk) or paste YouTube / TikTok / MP3 link..."
+                  class="w-full bg-zinc-950 border border-zinc-800 focus:border-cyan-500 rounded-xl px-3 py-1.5 text-xs text-white placeholder-zinc-500 font-sans"
+                  onkeydown="if(event.key==='Enter'){event.preventDefault(); triggerInternetAudioSearch();}">
+              </div>
+              <button type="button" onclick="triggerInternetAudioSearch()" id="btnSearchInternetAudio"
+                class="bg-cyan-600 hover:bg-cyan-500 text-white px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center space-x-1 cursor-pointer shadow-md">
+                <i class="fa-solid fa-magnifying-glass text-xs"></i>
+                <span>Search</span>
+              </button>
+            </div>
+
+            <!-- Search Results Streamer (Scrollable) -->
+            <div id="internetAudioResultsBox" class="hidden space-y-2 max-h-[220px] overflow-y-auto p-2 bg-zinc-950/90 rounded-xl border border-zinc-800/80">
+            </div>
+          </div>
+
+          <!-- Audio Preview Player -->
+          <audio id="reeditAudioPreviewPlayer" class="hidden"></audio>
+        </div>
+
+        <!-- Title & Tags -->
+        <div class="space-y-2">
+          <div>
+            <div class="flex items-center justify-between mb-1">
+              <label class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Viral Title</label>
+              <button type="button" onclick="generateReEditTitleWithAI()" class="text-[10px] text-purple-400 hover:text-purple-300 font-medium cursor-pointer">
+                <i class="fa-solid fa-arrows-rotate mr-1"></i>Regen Title
+              </button>
+            </div>
+            <input type="text" id="reeditTitleInput" 
+              class="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-3 py-2 text-xs text-white font-medium">
+          </div>
+          <div>
+            <label class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block mb-1">Hashtags</label>
+            <input type="text" id="reeditTagsInput" 
+              class="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-3 py-2 text-xs text-zinc-300 font-mono">
+          </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="border-t border-zinc-800 pt-3 flex items-center justify-between">
+          <button type="button" onclick="closeReEditModal()" class="bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer">
+            Cancel
+          </button>
+          <button id="reeditSubmitBtn" type="button" onclick="submitReRenderClip()" class="bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-600 hover:from-purple-500 hover:to-indigo-500 text-white px-5 py-2.5 rounded-xl text-xs font-bold shadow-lg shadow-purple-600/30 flex items-center space-x-2 transition-all active:scale-[0.98] cursor-pointer">
+            <i class="fa-solid fa-wand-magic-sparkles text-sm"></i>
+            <span>Re-Render Reel with Changes</span>
           </button>
         </div>
       </div>
@@ -3897,17 +4889,18 @@ HTML_PAGE = """<!DOCTYPE html>
                 <span class="text-xs font-bold text-white">#${tf.id}</span>
                 <span class="text-[11px] font-mono font-semibold text-zinc-300 bg-zinc-900 px-2 py-0.5 rounded border border-zinc-800">${timeLabel} (${tf.duration}s)</span>
                 <span class="text-[10px] px-2 py-0.5 rounded-full border ${intensityColor} font-bold">${tf.intensity || 'Hot Moment 🔥'}</span>
+                ${(tf.ai_powered || currentAIConfig.enabled) ? `<span class="text-[10px] px-2 py-0.5 rounded-full bg-purple-950/80 border border-purple-700/60 text-purple-300 font-bold flex items-center space-x-1" title="Curated by Connected AI Model"><i class="fa-solid fa-brain text-[9px] text-purple-400"></i><span>AI • ${Math.round(tf.score || 95)}%</span></span>` : ''}
                 <span id="tf_status_badge_${index}" class="hidden text-[10px] px-2.5 py-0.5 rounded-full bg-indigo-600 text-white font-bold flex items-center shadow-lg shadow-indigo-600/30">
                   <span class="w-1.5 h-1.5 rounded-full bg-white mr-1.5 animate-ping"></span>Playing
                 </span>
               </div>
               <div class="flex items-center space-x-1.5">
-                <button onclick="regenerateTimeframeMeta(${index})" 
-                  class="text-[11px] px-2 py-1 rounded-md bg-zinc-800 hover:bg-zinc-700 text-indigo-400 font-medium transition-all" title="Regenerate viral title & hashtags">
+                <button id="tf_regen_btn_${index}" onclick="regenerateTimeframeMeta(${index})" 
+                  class="text-[11px] px-2 py-1 rounded-md bg-zinc-800 hover:bg-zinc-700 text-indigo-400 font-medium transition-all cursor-pointer" title="Regenerate viral title & hashtags using AI">
                   <i class="fa-solid fa-arrows-rotate mr-1"></i>Regen
                 </button>
                 <button id="tf_preview_btn_${index}" onclick="previewTimeframe(${index}, ${tf.start}, ${tf.end})" 
-                  class="text-xs px-2.5 py-1 rounded-md bg-zinc-800 hover:bg-indigo-600 text-zinc-200 hover:text-white transition-all flex items-center space-x-1 shadow" title="Preview this moment in source player (auto-stops at end)">
+                  class="text-xs px-2.5 py-1 rounded-md bg-zinc-800 hover:bg-indigo-600 text-zinc-200 hover:text-white transition-all flex items-center space-x-1 shadow cursor-pointer" title="Preview this moment in source player (auto-stops at end)">
                   <i class="fa-solid fa-play text-[10px] mr-1"></i>
                   <span>Preview</span>
                 </button>
@@ -3934,6 +4927,16 @@ HTML_PAGE = """<!DOCTYPE html>
               <div class="text-[11px] text-zinc-500 italic truncate">
                 "${escapeHtml(tf.hook)}"
               </div>
+              <div class="flex items-center space-x-2 pt-0.5">
+                <span class="text-[9px] bg-purple-950/70 text-purple-300 border border-purple-800/60 px-2 py-0.5 rounded-full font-medium flex items-center space-x-1" title="AI Selected Royalty-Free BGM">
+                  <i class="fa-solid fa-music text-[8px] text-purple-400"></i>
+                  <span>BGM: ${escapeHtml((tf.bgm_track || 'dark_tension').replace('_', ' ').toUpperCase())}</span>
+                </span>
+                <span class="text-[9px] bg-zinc-900 text-zinc-400 border border-zinc-800 px-2 py-0.5 rounded-full font-medium flex items-center space-x-1" title="AI Selected Hook SFX">
+                  <i class="fa-solid fa-bolt text-[8px] text-amber-400"></i>
+                  <span>SFX: ${escapeHtml((tf.hook_sfx || 'whoosh_riser').replace('_', ' ').toUpperCase())}</span>
+                </span>
+              </div>
             </div>
           </div>
         `;
@@ -3945,6 +4948,12 @@ HTML_PAGE = """<!DOCTYPE html>
     async function regenerateTimeframeMeta(index) {
       const tf = loadedTimeframes[index];
       if (!tf) return;
+
+      const regenBtn = document.getElementById('tf_regen_btn_' + index);
+      if (regenBtn) {
+        regenBtn.disabled = true;
+        regenBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i>AI...';
+      }
 
       tf.variation = (tf.variation || 0) + 1;
       try {
@@ -3968,6 +4977,11 @@ HTML_PAGE = """<!DOCTYPE html>
         }
       } catch (e) {
         console.error(e);
+      } finally {
+        if (regenBtn) {
+          regenBtn.disabled = false;
+          regenBtn.innerHTML = '<i class="fa-solid fa-arrows-rotate mr-1"></i>Regen';
+        }
       }
     }
 
@@ -4329,7 +5343,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
     function renderDraftClips(drafts) {
       const list = drafts || [];
-      const fingerprint = list.map(d => `${d.id}_${d.approved}_${d.status}_${d.render_pct}_${d.render_stage}_${d.filename}_${d.size_mb}_${d.title}`).join('|');
+      const fingerprint = list.map(d => `${d.id}_${d.approved}_${d.status}_${d.render_pct}_${d.render_stage}_${d.filename}_${d.size_mb}_${d.title}_${d.updated_at || ''}`).join('|');
       if (fingerprint === lastDraftsFingerprint) {
         return;
       }
@@ -4421,7 +5435,7 @@ HTML_PAGE = """<!DOCTYPE html>
         } else {
           videoBoxHtml = `
             <div class="relative w-full aspect-[9/16] max-h-[360px] bg-black rounded-xl overflow-hidden border border-zinc-800 flex items-center justify-center">
-              <video controls playsinline preload="none" ${d.poster ? `poster="${d.poster}"` : ''} class="w-full h-full object-contain lazy-media" data-src="/media/draft/${d.filename}#t=0.001">
+              <video controls playsinline preload="none" ${d.poster ? `poster="${d.poster}?v=${d.updated_at || ''}"` : ''} class="w-full h-full object-contain lazy-media" data-src="/media/draft/${d.filename}?v=${d.updated_at || ''}#t=0.001">
               </video>
             </div>
           `;
@@ -4466,9 +5480,13 @@ HTML_PAGE = """<!DOCTYPE html>
             </div>
 
             <div class="pt-1 flex flex-col space-y-2">
+              <button onclick="openReEditModal('${d.id}', 'draft')" class="w-full bg-zinc-900 hover:bg-purple-950/60 border border-zinc-800 hover:border-purple-700/60 text-purple-300 hover:text-white text-xs py-2 rounded-xl font-semibold flex items-center justify-center space-x-1.5 transition-all cursor-pointer shadow-sm">
+                <i class="fa-solid fa-wand-magic-sparkles text-purple-400"></i>
+                <span>Re-Edit with Feedback (Crop, Split &amp; Captions)</span>
+              </button>
               ${approveBtn}
               ${(isReady && !d.approved) ? `
-                <button onclick="openPublishModal('${d.filename}', document.getElementById('title_${d.id}') ? document.getElementById('title_${d.id}').value : '', document.getElementById('tags_${d.id}') ? document.getElementById('tags_${d.id}').value : '', '${escapeHtml(d.hook || '')}', 'draft', '${d.start.toFixed(1)}s - ${d.end.toFixed(1)}s')"
+                <button onclick="publishDraftClip(${d.id})"
                   class="w-full bg-zinc-900 hover:bg-red-950/60 border border-zinc-800 hover:border-red-700/60 text-zinc-300 hover:text-red-300 text-xs py-2 rounded-xl font-semibold flex items-center justify-center space-x-2 transition-all cursor-pointer">
                   <i class="fa-brands fa-youtube text-red-500 text-sm"></i>
                   <span>Publish Draft to YouTube</span>
@@ -4481,6 +5499,18 @@ HTML_PAGE = """<!DOCTYPE html>
 
       updateBulkApproveBtn();
       initLazyMediaObserver();
+    }
+
+    function publishDraftClip(clipId) {
+      const d = (loadedDrafts || []).find(item => item.id === clipId);
+      if (!d) return;
+      const titleInput = document.getElementById('title_' + clipId);
+      const tagsInput = document.getElementById('tags_' + clipId);
+      const title = titleInput ? titleInput.value : (d.title || '');
+      const tags = tagsInput ? tagsInput.value : (d.hashtags || '');
+      const hook = d.hook || '';
+      const timestamps = (d.start !== undefined && d.end !== undefined) ? `${d.start.toFixed(1)}s - ${d.end.toFixed(1)}s` : '';
+      openPublishModal(d.filename, title, tags, hook, 'draft', timestamps);
     }
 
     function toggleDraftCheck(clipId) {
@@ -4568,7 +5598,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
       const list = (approved || []).slice().sort((a, b) => getClipNum(a) - getClipNum(b));
       window.__approvedClips = list;
-      const fingerprint = list.map(a => `${a.id}_${a.filename}_${a.size_mb}_${a.title}_${a.hashtags}_${(a.description || '').length}_${a.poster}`).join('|');
+      const fingerprint = list.map(a => `${a.id}_${a.filename}_${a.size_mb}_${a.title}_${a.hashtags}_${(a.description || '').length}_${a.poster}_${a.updated_at || ''}`).join('|');
       if (fingerprint === lastApprovedFingerprint) {
         return;
       }
@@ -4587,7 +5617,7 @@ HTML_PAGE = """<!DOCTYPE html>
       }
 
       container.innerHTML = list.map(a => {
-        const posterAttr = a.poster ? `poster="${a.poster}"` : '';
+        const posterAttr = a.poster ? `poster="${a.poster}?v=${a.updated_at || ''}"` : '';
         const descText = a.description || '';
         return `
           <div id="card_${a.id}" class="bg-zinc-950 border border-emerald-950/60 hover:border-emerald-700/60 rounded-2xl p-4 shadow-xl flex flex-col space-y-3.5 transition-all">
@@ -4597,7 +5627,7 @@ HTML_PAGE = """<!DOCTYPE html>
             </div>
 
             <div class="relative w-full aspect-[9/16] max-h-[360px] bg-black rounded-xl overflow-hidden border border-zinc-800 flex items-center justify-center">
-              <video controls playsinline preload="none" ${posterAttr} class="w-full h-full object-contain lazy-media" data-src="/media/final/${a.filename}#t=0.001">
+              <video controls playsinline preload="none" ${posterAttr} class="w-full h-full object-contain lazy-media" data-src="/media/final/${a.filename}?v=${a.updated_at || ''}#t=0.001">
               </video>
             </div>
 
@@ -4610,7 +5640,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     <i class="fa-solid fa-heading text-indigo-400"></i>
                     <span>Viral Title</span>
                   </label>
-                  <button id="regen_btn_${a.id}" onclick="regenerateFinalClipMetadata('${a.filename}', '${a.id}', '${escapeHtml(a.hook || '')}', '${escapeHtml(a.timestamps || '')}')" 
+                  <button id="regen_btn_${a.id}" onclick="regenerateFinalClipMetadata('${a.id}')" 
                     class="text-[11px] px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-300 hover:text-white font-bold transition-all border border-indigo-700/60 flex items-center space-x-1 cursor-pointer shadow-sm" title="Research YouTube live autocomplete & regenerate CTR title, keywords, and description">
                     <i class="fa-solid fa-wand-magic-sparkles text-[10px] text-indigo-400"></i>
                     <span>Regen SEO Metadata</span>
@@ -4651,13 +5681,17 @@ HTML_PAGE = """<!DOCTYPE html>
 
             <!-- Action Buttons -->
             <div class="flex flex-col space-y-2 pt-1">
-              <button onclick="publishFinalClipWithCurrentData('${a.filename}', '${a.id}', '${escapeHtml(a.hook || '')}', '${escapeHtml(a.timestamps || '')}')" 
+              <button onclick="openReEditModal('${a.id}', 'final')" class="w-full bg-zinc-900 hover:bg-purple-950/60 border border-zinc-800 hover:border-purple-700/60 text-purple-300 hover:text-white text-xs py-2 rounded-xl font-semibold flex items-center justify-center space-x-1.5 transition-all cursor-pointer shadow-sm">
+                <i class="fa-solid fa-wand-magic-sparkles text-purple-400"></i>
+                <span>Re-Edit with Feedback (Crop, Split &amp; Captions)</span>
+              </button>
+              <button onclick="publishFinalClipWithCurrentData('${a.id}')" 
                 class="w-full bg-gradient-to-r from-red-600 via-rose-600 to-red-600 hover:from-red-500 hover:to-rose-500 text-white text-xs py-2.5 rounded-xl font-bold shadow-lg shadow-red-600/30 flex items-center justify-center space-x-2 transition-all active:scale-[0.98] cursor-pointer">
                 <i class="fa-brands fa-youtube text-sm"></i>
                 <span>Publish to YouTube Studio</span>
               </button>
               <div class="flex space-x-2">
-                <button onclick="saveFinalClipMetadata('${a.filename}', '${a.id}', '${escapeHtml(a.hook || '')}', '${escapeHtml(a.timestamps || '')}')"
+                <button onclick="saveFinalClipMetadata('${a.id}')"
                   class="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 hover:text-white text-xs py-2 rounded-lg font-semibold transition-all flex items-center justify-center space-x-1.5 cursor-pointer shadow">
                   <i class="fa-solid fa-floppy-disk text-indigo-400"></i>
                   <span>Save Metadata</span>
@@ -4690,13 +5724,23 @@ HTML_PAGE = """<!DOCTYPE html>
       }
     }
 
-    async function regenerateFinalClipMetadata(filename, cardId, hook, timestamps) {
-      const btn = document.getElementById('regen_btn_' + cardId);
-      const titleInput = document.getElementById('final_title_' + cardId);
-      const descInput = document.getElementById('final_desc_' + cardId);
-      const tagsInput = document.getElementById('final_tags_' + cardId);
+    async function regenerateFinalClipMetadata(cardIdOrFilename, cardId, hook, timestamps) {
+      let cId = cardId || cardIdOrFilename;
+      let fName = cardId ? cardIdOrFilename : '';
+      let hVal = hook || '';
+      let tVal = timestamps || '';
+      const item = (window.__approvedClips || []).find(c => String(c.id) === String(cId));
+      if (item) {
+        if (!fName) fName = item.filename || '';
+        if (!hVal) hVal = item.hook || '';
+        if (!tVal) tVal = item.timestamps || '';
+      }
+      const btn = document.getElementById('regen_btn_' + cId);
+      const titleInput = document.getElementById('final_title_' + cId);
+      const descInput = document.getElementById('final_desc_' + cId);
+      const tagsInput = document.getElementById('final_tags_' + cId);
 
-      finalClipVariations[filename] = (finalClipVariations[filename] || 0) + 1;
+      finalClipVariations[fName] = (finalClipVariations[fName] || 0) + 1;
 
       if (btn) {
         btn.disabled = true;
@@ -4709,12 +5753,12 @@ HTML_PAGE = """<!DOCTYPE html>
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             is_final: true,
-            filename: filename,
-            id: cardId,
-            hook: hook,
-            text: hook,
-            timestamps: timestamps,
-            variation: finalClipVariations[filename],
+            filename: fName,
+            id: cId,
+            hook: hVal,
+            text: hVal,
+            timestamps: tVal,
+            variation: finalClipVariations[fName],
             video_title: window.__sourceTitle || ''
           })
         });
@@ -4723,9 +5767,9 @@ HTML_PAGE = """<!DOCTYPE html>
           if (titleInput) titleInput.value = data.title;
           if (descInput) descInput.value = data.description;
           if (tagsInput) tagsInput.value = data.hashtags;
-          updateFinalDescLen(cardId);
+          updateFinalDescLen(cId);
 
-          const card = document.getElementById('card_' + cardId);
+          const card = document.getElementById('card_' + cId);
           if (card) {
             card.classList.add('ring-2', 'ring-emerald-500/60');
             setTimeout(() => card.classList.remove('ring-2', 'ring-emerald-500/60'), 1500);
@@ -4754,10 +5798,20 @@ HTML_PAGE = """<!DOCTYPE html>
       }
     }
 
-    async function saveFinalClipMetadata(filename, cardId, hook, timestamps) {
-      const titleInput = document.getElementById('final_title_' + cardId);
-      const descInput = document.getElementById('final_desc_' + cardId);
-      const tagsInput = document.getElementById('final_tags_' + cardId);
+    async function saveFinalClipMetadata(cardIdOrFilename, cardId, hook, timestamps) {
+      let cId = cardId || cardIdOrFilename;
+      let fName = cardId ? cardIdOrFilename : '';
+      let hVal = hook || '';
+      let tVal = timestamps || '';
+      const item = (window.__approvedClips || []).find(c => String(c.id) === String(cId));
+      if (item) {
+        if (!fName) fName = item.filename || '';
+        if (!hVal) hVal = item.hook || '';
+        if (!tVal) tVal = item.timestamps || '';
+      }
+      const titleInput = document.getElementById('final_title_' + cId);
+      const descInput = document.getElementById('final_desc_' + cId);
+      const tagsInput = document.getElementById('final_tags_' + cId);
 
       const title = titleInput ? titleInput.value : '';
       const desc = descInput ? descInput.value : '';
@@ -4768,17 +5822,17 @@ HTML_PAGE = """<!DOCTYPE html>
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            filename: filename,
+            filename: fName,
             title: title,
             description: desc,
             hashtags: tags,
-            hook: hook,
-            timestamps: timestamps
+            hook: hVal,
+            timestamps: tVal
           })
         });
         const data = await res.json();
         if (res.ok && data.success) {
-          alert(`✓ Saved updated metadata for ${filename}!`);
+          alert(`✓ Saved updated metadata for ${fName}!`);
         } else {
           alert('Failed to save metadata: ' + (data.error || 'Server error'));
         }
@@ -4797,12 +5851,22 @@ HTML_PAGE = """<!DOCTYPE html>
       alert('✓ Copied Title, SEO Description & Hashtags to clipboard!');
     }
 
-    function publishFinalClipWithCurrentData(filename, cardId, hook, timestamps) {
-      const title = (document.getElementById('final_title_' + cardId) || {}).value || '';
-      const desc = (document.getElementById('final_desc_' + cardId) || {}).value || '';
-      const tags = (document.getElementById('final_tags_' + cardId) || {}).value || '';
+    function publishFinalClipWithCurrentData(cardIdOrFilename, cardId, hook, timestamps) {
+      let cId = cardId || cardIdOrFilename;
+      let fName = cardId ? cardIdOrFilename : '';
+      let hVal = hook || '';
+      let tVal = timestamps || '';
+      const item = (window.__approvedClips || []).find(c => String(c.id) === String(cId));
+      if (item) {
+        if (!fName) fName = item.filename || '';
+        if (!hVal) hVal = item.hook || '';
+        if (!tVal) tVal = item.timestamps || '';
+      }
+      const title = (document.getElementById('final_title_' + cId) || {}).value || '';
+      const desc = (document.getElementById('final_desc_' + cId) || {}).value || '';
+      const tags = (document.getElementById('final_tags_' + cId) || {}).value || '';
 
-      openPublishModalWithData(filename, title, desc, tags, hook, 'final', timestamps);
+      openPublishModalWithData(fName, title, desc, tags, hVal, 'final', tVal);
     }
 
     let lazyMediaObserver = null;
@@ -4889,21 +5953,1107 @@ HTML_PAGE = """<!DOCTYPE html>
     function pad(n) { return n < 10 ? '0' + n : n; }
     function escapeHtml(str) {
       if (!str) return '';
-      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    // ==========================================
+    // AI Model Connector Management
+    // ==========================================
+    let currentAIConfig = {
+      provider: 'antigravity',
+      model: 'gemini-3.8-flash-medium',
+      api_key: '',
+      base_url: '',
+      enabled: true
+    };
+    let aiModelPresets = {
+      antigravity: ['gemini-3.8-flash-medium', 'gemini-3.8-flash-high', 'claude-sonnet-4-6', 'gpt-oss-120b-medium'],
+      gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro'],
+      openai: ['gpt-4o', 'gpt-4o-mini', 'o1-mini'],
+      anthropic: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022'],
+      groq: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'],
+      ollama: ['llama3', 'mistral', 'qwen2.5', 'deepseek-r1'],
+      custom: ['deepseek-chat', 'meta-llama/llama-3.3-70b-instruct']
+    };
+    let selectedAIProvider = 'antigravity';
+
+    async function loadAIConfig() {
+      try {
+        const res = await fetch('/api/ai/config');
+        if (res.ok) {
+          const cfg = await res.json();
+          currentAIConfig = Object.assign(currentAIConfig, cfg);
+          selectedAIProvider = currentAIConfig.provider || 'antigravity';
+          updateAIHeaderUI(currentAIConfig);
+        }
+      } catch (e) {
+        console.warn('Could not load AI config:', e);
+      }
+      try {
+        const pRes = await fetch('/api/ai/models');
+        if (pRes.ok) {
+          const presets = await pRes.json();
+          if (presets && Object.keys(presets).length > 0) {
+            aiModelPresets = presets;
+          }
+        }
+      } catch (e) {
+        console.warn('Could not load AI presets:', e);
+      }
+    }
+
+    function updateAIHeaderUI(cfg) {
+      const label = document.getElementById('aiBtnLabel');
+      const dot = document.getElementById('aiActiveDot');
+      if (!label || !dot) return;
+      const prov = cfg.provider || 'antigravity';
+      const provNames = {
+        antigravity: 'Antigravity',
+        gemini: 'Gemini',
+        openai: 'OpenAI',
+        anthropic: 'Claude',
+        groq: 'Groq',
+        ollama: 'Ollama',
+        custom: 'Custom AI'
+      };
+      const pName = provNames[prov] || prov.toUpperCase();
+      label.textContent = `AI: ${pName}`;
+      if (cfg.enabled) {
+        dot.className = 'w-1.5 h-1.5 rounded-full bg-emerald-400';
+      } else {
+        dot.className = 'w-1.5 h-1.5 rounded-full bg-zinc-500';
+      }
+
+      const momentsBadge = document.getElementById('aiMomentsBadge');
+      const momentsLabel = document.getElementById('aiMomentsLabel');
+      if (momentsBadge && momentsLabel) {
+        if (cfg.enabled) {
+          momentsBadge.className = 'text-[10px] px-2.5 py-0.5 rounded-full border border-purple-700/60 bg-purple-950/40 text-purple-300 font-bold flex items-center space-x-1.5 shadow-sm';
+          momentsLabel.textContent = `AI: ${pName} (${cfg.model || 'active'})`;
+        } else {
+          momentsBadge.className = 'text-[10px] px-2.5 py-0.5 rounded-full border border-zinc-700 bg-zinc-800 text-zinc-400 font-bold flex items-center space-x-1.5';
+          momentsLabel.textContent = 'NLP Heuristics';
+        }
+      }
+    }
+
+    function openAIModal() {
+      const modal = document.getElementById('aiModal');
+      if (!modal) return;
+      modal.classList.remove('hidden');
+      selectAIProvider(currentAIConfig.provider || 'antigravity');
+      document.getElementById('aiModelInput').value = currentAIConfig.model || '';
+      document.getElementById('aiApiKeyInput').value = currentAIConfig.api_key || '';
+      document.getElementById('aiBaseUrlInput').value = currentAIConfig.base_url || '';
+      document.getElementById('aiEnabledToggle').checked = currentAIConfig.enabled !== false;
+      const resultBox = document.getElementById('aiTestResultBox');
+      if (resultBox) resultBox.classList.add('hidden');
+    }
+
+    function closeAIModal() {
+      const modal = document.getElementById('aiModal');
+      if (modal) modal.classList.add('hidden');
+    }
+
+    function selectAIProvider(prov) {
+      selectedAIProvider = prov;
+      document.querySelectorAll('.ai-prov-btn').forEach(btn => {
+        const p = btn.getAttribute('data-provider');
+        if (p === prov) {
+          btn.className = 'ai-prov-btn p-2.5 rounded-xl border text-left transition-all bg-purple-950/60 border-purple-500 text-white shadow-sm ring-1 ring-purple-500/50 cursor-pointer';
+        } else {
+          btn.className = 'ai-prov-btn p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer';
+        }
+      });
+
+      const badge = document.getElementById('aiActiveBadge');
+      if (badge) badge.textContent = prov.toUpperCase();
+
+      const agyBanner = document.getElementById('aiAgyBanner');
+      const credSection = document.getElementById('aiCredentialsSection');
+      const apiKeyRow = document.getElementById('aiApiKeyRow');
+      const baseUrlRow = document.getElementById('aiBaseUrlRow');
+
+      if (prov === 'antigravity') {
+        if (agyBanner) agyBanner.classList.remove('hidden');
+        if (credSection) credSection.classList.add('hidden');
+      } else {
+        if (agyBanner) agyBanner.classList.add('hidden');
+        if (credSection) credSection.classList.remove('hidden');
+        if (prov === 'ollama') {
+          if (apiKeyRow) apiKeyRow.classList.add('hidden');
+          if (baseUrlRow) {
+            baseUrlRow.classList.remove('hidden');
+            if (!document.getElementById('aiBaseUrlInput').value) {
+              document.getElementById('aiBaseUrlInput').value = 'http://localhost:11434';
+            }
+          }
+        } else if (prov === 'custom') {
+          if (apiKeyRow) apiKeyRow.classList.remove('hidden');
+          if (baseUrlRow) baseUrlRow.classList.remove('hidden');
+        } else {
+          if (apiKeyRow) apiKeyRow.classList.remove('hidden');
+          if (baseUrlRow) baseUrlRow.classList.add('hidden');
+        }
+      }
+
+      renderAIModelPresets(prov);
+    }
+
+    function renderAIModelPresets(prov) {
+      const container = document.getElementById('aiModelPresetsContainer');
+      if (!container) return;
+      const presets = aiModelPresets[prov] || [];
+      const currentModel = document.getElementById('aiModelInput').value;
+      if (!currentModel && presets.length > 0) {
+        document.getElementById('aiModelInput').value = presets[0];
+      }
+      container.innerHTML = presets.map(m => {
+        const isSelected = (m === document.getElementById('aiModelInput').value);
+        const activeClass = isSelected ? 'bg-purple-600/30 border-purple-500 text-purple-200' : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700';
+        return `<button type="button" onclick="applyModelPreset('${m}')" class="px-2.5 py-1 rounded-lg border text-[11px] font-mono transition-all cursor-pointer ${activeClass}"><i class="fa-solid fa-microchip mr-1 text-[10px] text-purple-400"></i>${m}</button>`;
+      }).join('');
+    }
+
+    function applyModelPreset(model) {
+      document.getElementById('aiModelInput').value = model;
+      renderAIModelPresets(selectedAIProvider);
+    }
+
+    function toggleApiKeyVisibility() {
+      const input = document.getElementById('aiApiKeyInput');
+      const icon = document.getElementById('aiKeyEyeIcon');
+      if (!input || !icon) return;
+      if (input.type === 'password') {
+        input.type = 'text';
+        icon.className = 'fa-solid fa-eye-slash';
+      } else {
+        input.type = 'password';
+        icon.className = 'fa-solid fa-eye';
+      }
+    }
+
+    async function testAIConnection() {
+      const testBtn = document.getElementById('aiTestBtn');
+      const resultBox = document.getElementById('aiTestResultBox');
+      const payload = {
+        provider: selectedAIProvider,
+        model: document.getElementById('aiModelInput').value.trim(),
+        api_key: document.getElementById('aiApiKeyInput').value.trim(),
+        base_url: document.getElementById('aiBaseUrlInput').value.trim(),
+        enabled: document.getElementById('aiEnabledToggle').checked
+      };
+
+      if (testBtn) {
+        testBtn.disabled = true;
+        testBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i> Testing...';
+      }
+      if (resultBox) {
+        resultBox.classList.remove('hidden');
+        resultBox.className = 'p-3 rounded-xl border text-xs bg-zinc-950 border-zinc-800 text-zinc-400 flex items-center space-x-2';
+        resultBox.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-purple-400"></i><span>Pinging ' + escapeHtml(payload.provider) + ' endpoint...</span>';
+      }
+
+      try {
+        const res = await fetch('/api/ai/test', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+          resultBox.className = 'p-3 rounded-xl border text-xs bg-emerald-950/40 border-emerald-700/60 text-emerald-200 space-y-1';
+          resultBox.innerHTML = `
+            <div class="font-bold flex items-center justify-between">
+              <span class="flex items-center space-x-1.5"><i class="fa-solid fa-circle-check text-emerald-400"></i><span>${escapeHtml(data.message || 'Connection Successful')}</span></span>
+              <span class="font-mono text-[11px] bg-emerald-900/60 px-2 py-0.5 rounded text-emerald-300 font-bold">${data.latency_ms}ms</span>
+            </div>
+            <div class="text-[11px] text-emerald-300/80">Confirmed model: <span class="font-mono">${escapeHtml(data.model)}</span> • Ready to generate high-retention hooks!</div>
+          `;
+        } else {
+          resultBox.className = 'p-3 rounded-xl border text-xs bg-red-950/40 border-red-700/60 text-red-200 space-y-1';
+          resultBox.innerHTML = `
+            <div class="font-bold flex items-center space-x-1.5"><i class="fa-solid fa-circle-xmark text-red-400"></i><span>Connection Failed</span></div>
+            <div class="text-[11px] text-red-300/90">${escapeHtml(data.error || data.message || 'Could not connect')}</div>
+          `;
+        }
+      } catch (err) {
+        if (resultBox) {
+          resultBox.className = 'p-3 rounded-xl border text-xs bg-red-950/40 border-red-700/60 text-red-200';
+          resultBox.innerHTML = `<div class="font-bold"><i class="fa-solid fa-circle-xmark text-red-400 mr-1"></i>Request Error: ${escapeHtml(err.message)}</div>`;
+        }
+      } finally {
+        if (testBtn) {
+          testBtn.disabled = false;
+          testBtn.innerHTML = '<i class="fa-solid fa-plug text-zinc-400 mr-1"></i> Test Connection';
+        }
+      }
+    }
+
+    async function saveAIConfig() {
+      const saveBtn = document.getElementById('aiSaveBtn');
+      const payload = {
+        provider: selectedAIProvider,
+        model: document.getElementById('aiModelInput').value.trim(),
+        api_key: document.getElementById('aiApiKeyInput').value.trim(),
+        base_url: document.getElementById('aiBaseUrlInput').value.trim(),
+        enabled: document.getElementById('aiEnabledToggle').checked
+      };
+
+      if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i> Saving...';
+      }
+
+      try {
+        const res = await fetch('/api/ai/save-config', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+          currentAIConfig = Object.assign(currentAIConfig, payload);
+          updateAIHeaderUI(currentAIConfig);
+          lastTimeframesFingerprint = "";
+          if (loadedTimeframes.length > 0) renderTimeframes(loadedTimeframes);
+          alert('✓ AI Model settings saved and activated!');
+          closeAIModal();
+        } else {
+          alert('Failed to save AI config.');
+        }
+      } catch (err) {
+        alert('Error saving AI config: ' + err.message);
+      } finally {
+        if (saveBtn) {
+          saveBtn.disabled = false;
+          saveBtn.innerHTML = '<i class="fa-solid fa-floppy-disk text-xs mr-1"></i> Save &amp; Apply';
+        }
+      }
+    }
+
+    // ==========================================
+    // Re-Edit Reel Studio (AI-Powered)
+    // ==========================================
+    let currentReEditClip = null;
+    let currentReEditFraming = 'split-streamer';
+
+    function openReEditModal(clipId, folder) {
+      let clip = null;
+      if (folder === 'draft') {
+        clip = (loadedDrafts || []).find(d => String(d.id) === String(clipId));
+      } else {
+        clip = (window.__approvedClips || []).find(a => String(a.id) === String(clipId));
+      }
+      if (!clip) {
+        clip = (loadedDrafts || []).find(d => String(d.id) === String(clipId)) ||
+               (window.__approvedClips || []).find(a => String(a.id) === String(clipId));
+      }
+      if (!clip) {
+        alert('Could not find clip data.');
+        return;
+      }
+
+      currentReEditClip = {
+        id: clip.id,
+        folder: folder || (clip.filename && clip.filename.includes('clip_') ? 'draft' : 'draft'),
+        filename: clip.filename || `clip_${clip.id}.mp4`,
+        start: (clip.start !== undefined && clip.start !== null) ? Number(clip.start) : 0.0,
+        end: (clip.end !== undefined && clip.end !== null) ? Number(clip.end) : 30.0,
+        title: clip.title || '',
+        hook: clip.hook || '',
+        hashtags: clip.hashtags || '#Shorts #Viral',
+        framing_mode: clip.framing_mode || 'split-streamer',
+        subtitle_theme: clip.subtitle_theme || 'hormozi',
+        subtitle_format: clip.subtitle_format || 'karaoke',
+        subtitle_position: clip.subtitle_position || 'bottom'
+      };
+
+      // Set Badge & Display Info
+      const badge = document.getElementById('reeditClipBadge');
+      if (badge) badge.textContent = `CLIP #${clip.id} (${(folder || 'draft').toUpperCase()})`;
+
+      const titleDisplay = document.getElementById('reeditTitleDisplay');
+      if (titleDisplay) titleDisplay.textContent = currentReEditClip.title || currentReEditClip.filename;
+
+      const hookDisplay = document.getElementById('reeditHookDisplay');
+      if (hookDisplay) hookDisplay.textContent = currentReEditClip.hook ? `"${currentReEditClip.hook}"` : 'No hook text detected';
+
+      // Video Preview
+      const video = document.getElementById('reeditVideoPreview');
+      if (video) {
+        video.src = `/media/${folder}/${currentReEditClip.filename}#t=0.001`;
+        video.load();
+      }
+
+      // Timing Inputs
+      const startInp = document.getElementById('reeditStartInput');
+      const endInp = document.getElementById('reeditEndInput');
+      if (startInp) startInp.value = currentReEditClip.start.toFixed(1);
+      if (endInp) endInp.value = currentReEditClip.end.toFixed(1);
+      updateReEditDurationDisplay();
+
+      // Style Selectors
+      const themeSel = document.getElementById('reeditThemeSelect');
+      if (themeSel) themeSel.value = currentReEditClip.subtitle_theme;
+      const formatSel = document.getElementById('reeditFormatSelect');
+      if (formatSel) formatSel.value = currentReEditClip.subtitle_format;
+      const posSel = document.getElementById('reeditPositionSelect');
+      if (posSel) posSel.value = currentReEditClip.subtitle_position;
+
+      // Audio & SFX Selectors
+      const bgmSel = document.getElementById('reeditBgmSelect');
+      if (bgmSel) bgmSel.value = currentReEditClip.bgm_track || 'auto';
+      const sfxSel = document.getElementById('reeditSfxSelect');
+      if (sfxSel) sfxSel.value = currentReEditClip.hook_sfx || 'auto';
+      const bgmVolRange = document.getElementById('reeditBgmVolRange');
+      const bgmVolLabel = document.getElementById('reeditBgmVolLabel');
+      const volPct = Math.round((currentReEditClip.bgm_volume !== undefined ? currentReEditClip.bgm_volume : 0.16) * 100);
+      if (bgmVolRange) bgmVolRange.value = volPct;
+      if (bgmVolLabel) bgmVolLabel.textContent = volPct + '%';
+
+      // Metadata Inputs
+      const titleInp = document.getElementById('reeditTitleInput');
+      if (titleInp) titleInp.value = currentReEditClip.title;
+      const tagsInp = document.getElementById('reeditTagsInput');
+      if (tagsInp) tagsInp.value = currentReEditClip.hashtags;
+
+      // Feedback & Notes reset
+      const feedbackInp = document.getElementById('reeditFeedbackInput');
+      if (feedbackInp) feedbackInp.value = '';
+      const noteBox = document.getElementById('reeditAINoteBox');
+      if (noteBox) {
+        noteBox.classList.add('hidden');
+        noteBox.innerHTML = '';
+      }
+
+      // Framing Layout selection
+      selectReEditFraming(currentReEditClip.framing_mode || 'split-streamer');
+
+      // Populate any previously downloaded internet tracks into the dropdowns
+      loadDownloadedAudioOptions();
+
+      // Show Modal
+      const modal = document.getElementById('reeditModal');
+      if (modal) modal.classList.remove('hidden');
+    }
+
+    let currentAudioPreviewType = null;
+    function previewAudioTrack(type) {
+      const player = document.getElementById('reeditAudioPreviewPlayer');
+      if (!player) return;
+
+      if (!player.paused && currentAudioPreviewType === type) {
+        player.pause();
+        currentAudioPreviewType = null;
+        updateAudioPreviewLabels();
+        return;
+      }
+
+      let fileKey = '';
+      if (type === 'bgm') {
+        let sel = document.getElementById('reeditBgmSelect').value;
+        if (sel === 'auto') sel = 'dark_tension';
+        if (sel === 'none') { alert('No music selected to preview.'); return; }
+        if (window.__downloadedTracks?.[sel] || sel.startsWith('downloaded_')) {
+          fileKey = `/media/audio/downloaded/${sel.replace('downloaded_', '')}.mp3`;
+        } else {
+          fileKey = `/media/audio/bgm/${sel}.mp3`;
+        }
+      } else {
+        let sel = document.getElementById('reeditSfxSelect').value;
+        if (sel === 'auto') sel = 'whoosh_riser';
+        if (sel === 'none') { alert('No sound effect selected to preview.'); return; }
+        if (window.__downloadedTracks?.[sel] || sel.startsWith('downloaded_')) {
+          fileKey = `/media/audio/downloaded/${sel.replace('downloaded_', '')}.mp3`;
+        } else {
+          fileKey = `/media/audio/sfx/${sel}.mp3`;
+        }
+      }
+
+      player.src = fileKey;
+      player.volume = 0.8;
+      player.play().catch(e => console.warn('Audio preview play prevented:', e));
+      currentAudioPreviewType = type;
+      updateAudioPreviewLabels();
+
+      player.onended = () => {
+        currentAudioPreviewType = null;
+        updateAudioPreviewLabels();
+      };
+    }
+
+    async function loadDownloadedAudioOptions() {
+      try {
+        const res = await fetch('/api/audio/downloaded');
+        if (res.ok) {
+          const data = await res.json();
+          window.__downloadedTracks = {};
+          const bgmGroup = document.getElementById('reeditDownloadedBgmGroup');
+          const sfxGroup = document.getElementById('reeditDownloadedSfxGroup');
+          if (bgmGroup) bgmGroup.innerHTML = '';
+          if (sfxGroup) sfxGroup.innerHTML = '';
+
+          (data.items || []).forEach(item => {
+            window.__downloadedTracks[item.id] = item;
+            window.__downloadedTracks['downloaded_' + item.id] = item;
+            const opt = document.createElement('option');
+            opt.value = item.id;
+            opt.textContent = `🌐 ${item.title.substring(0, 42)}`;
+
+            if (item.category === 'sfx' && sfxGroup) {
+              sfxGroup.appendChild(opt);
+            } else if (bgmGroup) {
+              bgmGroup.appendChild(opt);
+            }
+          });
+        }
+      } catch (e) {
+        console.warn('Could not load downloaded audio options:', e);
+      }
+    }
+
+    function quickAudioSearch(tag, category) {
+      const inp = document.getElementById('internetAudioSearchInput');
+      if (inp) {
+        inp.value = tag;
+        triggerInternetAudioSearch(category);
+      }
+    }
+
+    async function triggerInternetAudioSearch(defaultCategory) {
+      const inp = document.getElementById('internetAudioSearchInput');
+      const query = inp ? inp.value.trim() : '';
+      if (!query) {
+        alert('Please enter an audio mood or paste a link.');
+        return;
+      }
+
+      // Check if it's a direct URL to fetch immediately
+      if (query.startsWith('http://') || query.startsWith('https://')) {
+        await downloadAndUseAudioLink(query, defaultCategory || 'bgm');
+        return;
+      }
+
+      const box = document.getElementById('internetAudioResultsBox');
+      const btn = document.getElementById('btnSearchInternetAudio');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-xs"></i><span>Searching...</span>';
+      }
+      if (box) {
+        box.classList.remove('hidden');
+        box.innerHTML = `
+          <div class="py-6 text-center text-xs text-zinc-400">
+            <i class="fa-solid fa-circle-notch fa-spin text-cyan-400 text-lg mb-2"></i>
+            <div>Searching internet for royalty-free "${escapeHtml(query)}"...</div>
+          </div>
+        `;
+      }
+
+      const cat = defaultCategory || (query.toLowerCase().includes('sfx') || query.toLowerCase().includes('boom') || query.toLowerCase().includes('whoosh') ? 'sfx' : 'bgm');
+
+      try {
+        const res = await fetch(`/api/audio/search?q=${encodeURIComponent(query)}&category=${cat}&limit=8`);
+        const data = await res.json();
+        renderInternetAudioResults(data.results || [], cat);
+      } catch (err) {
+        if (box) {
+          box.innerHTML = `<div class="p-3 text-red-400 text-xs">Search failed: ${escapeHtml(err.message)}</div>`;
+        }
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fa-solid fa-magnifying-glass text-xs"></i><span>Search</span>';
+        }
+      }
+    }
+
+    function renderInternetAudioResults(results, category) {
+      const box = document.getElementById('internetAudioResultsBox');
+      if (!box) return;
+      box.classList.remove('hidden');
+
+      if (!results || results.length === 0) {
+        box.innerHTML = `
+          <div class="py-4 text-center text-xs text-zinc-400">
+            No royalty-free tracks found for this query. Try "romantic piano", "intense war", or "phonk".
+          </div>
+        `;
+        return;
+      }
+
+      box.innerHTML = results.map((item) => {
+        return `
+          <div class="p-2.5 rounded-xl bg-zinc-900 border border-zinc-800 hover:border-cyan-500/50 flex items-center justify-between gap-3 transition-all">
+            <div class="flex items-center space-x-3 min-w-0">
+              <img src="${item.thumbnail}" alt="" class="w-12 h-12 rounded-lg object-cover bg-black border border-zinc-800 shrink-0">
+              <div class="min-w-0">
+                <div class="text-xs font-bold text-white truncate max-w-[280px]" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</div>
+                <div class="text-[10px] text-zinc-400 flex items-center space-x-2 mt-0.5">
+                  <span class="text-cyan-400 font-mono">${item.duration_str}</span>
+                  <span>•</span>
+                  <span class="truncate max-w-[150px]">${escapeHtml(item.uploader)}</span>
+                  <span class="px-1.5 py-0.2 rounded bg-emerald-950 text-emerald-300 text-[9px] font-mono">No Copyright</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex items-center space-x-2 shrink-0">
+              <button type="button" onclick="previewInternetResultAudio('${item.id}', '${escapeHtml(item.url)}')" id="prev_btn_${item.id}"
+                class="px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold flex items-center space-x-1 cursor-pointer">
+                <i class="fa-solid fa-play text-[10px]"></i>
+                <span>Listen</span>
+              </button>
+              <button type="button" onclick="downloadAndApplyAudio('${escapeHtml(item.url)}', '${escapeHtml(item.title)}', '${category}', '${item.id}')" id="use_btn_${item.id}"
+                class="px-3 py-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white text-xs font-bold shadow flex items-center space-x-1 cursor-pointer">
+                <i class="fa-solid fa-check text-[10px]"></i>
+                <span>Use In Reel</span>
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function downloadAndApplyAudio(url, title, category, trackId) {
+      const btn = document.getElementById('use_btn_' + trackId);
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-[10px]"></i><span>Fetching...</span>';
+      }
+
+      try {
+        const res = await fetch('/api/audio/fetch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: url, title: title, category: category })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          await loadDownloadedAudioOptions();
+
+          if (category === 'sfx') {
+            const sfxSel = document.getElementById('reeditSfxSelect');
+            if (sfxSel) {
+              sfxSel.value = data.id;
+              if (sfxSel.value !== data.id) {
+                const opt = new Option(`🌐 ${title.substring(0, 35)}`, data.id, true, true);
+                sfxSel.add(opt);
+              }
+            }
+          } else {
+            const bgmSel = document.getElementById('reeditBgmSelect');
+            if (bgmSel) {
+              bgmSel.value = data.id;
+              if (bgmSel.value !== data.id) {
+                const opt = new Option(`🌐 ${title.substring(0, 35)}`, data.id, true, true);
+                bgmSel.add(opt);
+              }
+            }
+          }
+
+          if (btn) {
+            btn.innerHTML = '<i class="fa-solid fa-check text-emerald-300 text-[10px]"></i><span>Active ✓</span>';
+          }
+
+          alert(`✓ Audio track "${title}" downloaded and set as your reel's music! It will be mixed with speech auto-ducking on re-render.`);
+        } else {
+          alert('Failed to download audio: ' + (data.error || 'Server error'));
+          if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa-solid fa-check text-[10px]"></i><span>Use In Reel</span>';
+          }
+        }
+      } catch (err) {
+        alert('Network error downloading audio: ' + err.message);
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fa-solid fa-check text-[10px]"></i><span>Use In Reel</span>';
+        }
+      }
+    }
+
+    async function downloadAndUseAudioLink(linkUrl, category) {
+      await downloadAndApplyAudio(linkUrl, linkUrl, category, 'custom_link');
+    }
+
+    async function previewInternetResultAudio(trackId, webpageUrl) {
+      const player = document.getElementById('reeditAudioPreviewPlayer');
+      if (!player) return;
+
+      if (!player.paused && currentAudioPreviewType === trackId) {
+        player.pause();
+        currentAudioPreviewType = null;
+        const btn = document.getElementById('prev_btn_' + trackId);
+        if (btn) btn.innerHTML = '<i class="fa-solid fa-play text-[10px]"></i><span>Listen</span>';
+        return;
+      }
+
+      // Check if already downloaded
+      const localFile = `/media/audio/downloaded/${trackId}.mp3`;
+      try {
+        const check = await fetch(localFile, { method: 'HEAD' });
+        if (check.ok) {
+          player.src = localFile;
+          player.play();
+          currentAudioPreviewType = trackId;
+          const btn = document.getElementById('prev_btn_' + trackId);
+          if (btn) btn.innerHTML = '<i class="fa-solid fa-pause text-cyan-400 text-[10px]"></i><span>Pause</span>';
+          return;
+        }
+      } catch (e) {}
+
+      // If not yet downloaded, trigger quick fetch so it can be previewed
+      const btn = document.getElementById('prev_btn_' + trackId);
+      if (btn) btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-[10px]"></i><span>Loading...</span>';
+
+      try {
+        const res = await fetch('/api/audio/fetch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: webpageUrl, category: 'bgm' })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          player.src = data.url;
+          player.play();
+          currentAudioPreviewType = trackId;
+          if (btn) btn.innerHTML = '<i class="fa-solid fa-pause text-cyan-400 text-[10px]"></i><span>Pause</span>';
+        } else {
+          if (btn) btn.innerHTML = '<i class="fa-solid fa-play text-[10px]"></i><span>Listen</span>';
+          alert('Could not preview audio: ' + (data.error || 'Server error'));
+        }
+      } catch (e) {
+        if (btn) btn.innerHTML = '<i class="fa-solid fa-play text-[10px]"></i><span>Listen</span>';
+      }
+    }
+
+    function updateAudioPreviewLabels() {
+      const bgmLabel = document.getElementById('bgmPlayLabel');
+      const sfxLabel = document.getElementById('sfxPlayLabel');
+      if (bgmLabel) {
+        bgmLabel.innerHTML = (currentAudioPreviewType === 'bgm') ? '<i class="fa-solid fa-pause text-emerald-400"></i> Stop' : '<i class="fa-solid fa-volume-high"></i> Preview';
+      }
+      if (sfxLabel) {
+        sfxLabel.innerHTML = (currentAudioPreviewType === 'sfx') ? '<i class="fa-solid fa-pause text-emerald-400"></i> Stop' : '<i class="fa-solid fa-volume-high"></i> Preview';
+      }
+    }
+
+    function onBgmSelectionChange() {
+      const player = document.getElementById('reeditAudioPreviewPlayer');
+      if (player && !player.paused) { player.pause(); currentAudioPreviewType = null; updateAudioPreviewLabels(); }
+    }
+    function onSfxSelectionChange() {
+      const player = document.getElementById('reeditAudioPreviewPlayer');
+      if (player && !player.paused) { player.pause(); currentAudioPreviewType = null; updateAudioPreviewLabels(); }
+    }
+
+    function closeReEditModal() {
+      const modal = document.getElementById('reeditModal');
+      if (modal) modal.classList.add('hidden');
+      const video = document.getElementById('reeditVideoPreview');
+      if (video) {
+        video.pause();
+        video.src = '';
+      }
+      const audio = document.getElementById('reeditAudioPreviewPlayer');
+      if (audio) {
+        audio.pause();
+        audio.src = '';
+      }
+      currentAudioPreviewType = null;
+      updateAudioPreviewLabels();
+    }
+
+    function selectReEditFraming(mode) {
+      currentReEditFraming = mode;
+      document.querySelectorAll('.reedit-mode-btn').forEach(btn => {
+        const m = btn.getAttribute('data-mode');
+        if (m === mode) {
+          btn.className = 'reedit-mode-btn p-2.5 rounded-xl border text-left transition-all bg-purple-950/60 border-purple-500 text-white shadow-sm ring-1 ring-purple-500/50 cursor-pointer';
+        } else {
+          btn.className = 'reedit-mode-btn p-2.5 rounded-xl border text-left transition-all bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 cursor-pointer';
+        }
+      });
+    }
+
+    function adjustReEditTime(type, delta) {
+      const startInp = document.getElementById('reeditStartInput');
+      const endInp = document.getElementById('reeditEndInput');
+      if (!startInp || !endInp) return;
+
+      if (type === 'start') {
+        let val = Math.max(0, (parseFloat(startInp.value) || 0) + delta);
+        startInp.value = val.toFixed(1);
+      } else if (type === 'end') {
+        let val = Math.max(0, (parseFloat(endInp.value) || 0) + delta);
+        endInp.value = val.toFixed(1);
+      }
+      updateReEditDurationDisplay();
+    }
+
+    function updateReEditDurationDisplay() {
+      const startInp = document.getElementById('reeditStartInput');
+      const endInp = document.getElementById('reeditEndInput');
+      const durBadge = document.getElementById('reeditDurationBadge');
+      const timingBadge = document.getElementById('reeditTimingBadge');
+      const durCalc = document.getElementById('reeditDurationCalculated');
+
+      if (!startInp || !endInp) return;
+      const s = parseFloat(startInp.value) || 0;
+      const e = parseFloat(endInp.value) || 0;
+      const dur = Math.max(0, e - s).toFixed(1);
+
+      if (durBadge) durBadge.textContent = `${dur}s`;
+      if (timingBadge) timingBadge.textContent = `${s.toFixed(1)}s - ${e.toFixed(1)}s`;
+      if (durCalc) {
+        durCalc.textContent = `Duration: ${dur}s`;
+        if (dur < 3 || e <= s) {
+          durCalc.className = 'text-xs font-mono font-bold text-red-400';
+        } else if (dur > 60) {
+          durCalc.className = 'text-xs font-mono font-bold text-amber-400';
+        } else {
+          durCalc.className = 'text-xs font-mono font-bold text-emerald-400';
+        }
+      }
+    }
+
+    async function applyAIFeedbackToReEdit() {
+      const fbInput = document.getElementById('reeditFeedbackInput');
+      const feedback = fbInput ? fbInput.value.trim() : '';
+      if (!feedback) {
+        alert('Please enter your feedback or instructions first (e.g., "Make it streamer split-screen and trim first 2 seconds").');
+        return;
+      }
+
+      const btn = document.getElementById('reeditApplyAIBtn');
+      const noteBox = document.getElementById('reeditAINoteBox');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-xs"></i><span>AI Thinking...</span>';
+      }
+
+      const s = parseFloat(document.getElementById('reeditStartInput').value) || 0;
+      const e = parseFloat(document.getElementById('reeditEndInput').value) || 30;
+
+      const clipPayload = {
+        id: currentReEditClip ? currentReEditClip.id : 1,
+        start: s,
+        end: e,
+        title: document.getElementById('reeditTitleInput').value || '',
+        hook: currentReEditClip ? currentReEditClip.hook : '',
+        framing_mode: currentReEditFraming,
+        subtitle_theme: document.getElementById('reeditThemeSelect').value,
+        subtitle_format: document.getElementById('reeditFormatSelect').value,
+        subtitle_position: document.getElementById('reeditPositionSelect').value
+      };
+
+      try {
+        const res = await fetch('/api/parse-reedit-feedback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            feedback: feedback,
+            clip_info: clipPayload,
+            video_title: window.__sourceTitle || ''
+          })
+        });
+        const data = await res.json();
+        if (res.ok && data.success && data.result) {
+          const r = data.result;
+          if (r.start !== undefined && r.end !== undefined) {
+            document.getElementById('reeditStartInput').value = Number(r.start).toFixed(1);
+            document.getElementById('reeditEndInput').value = Number(r.end).toFixed(1);
+            updateReEditDurationDisplay();
+          }
+          if (r.layout) {
+            selectReEditFraming(r.layout);
+          }
+          if (r.theme) {
+            document.getElementById('reeditThemeSelect').value = r.theme;
+          }
+          if (r.format) {
+            document.getElementById('reeditFormatSelect').value = r.format;
+          }
+          if (r.position) {
+            document.getElementById('reeditPositionSelect').value = r.position;
+          }
+          if (r.title) {
+            document.getElementById('reeditTitleInput').value = r.title;
+          }
+          if (r.hashtags) {
+            document.getElementById('reeditTagsInput').value = r.hashtags;
+          }
+          if (r.bgm_track && document.getElementById('reeditBgmSelect')) {
+            document.getElementById('reeditBgmSelect').value = r.bgm_track;
+          }
+          if (r.bgm_volume !== undefined && document.getElementById('reeditBgmVolRange')) {
+            const vPct = Math.round(Number(r.bgm_volume) * 100);
+            document.getElementById('reeditBgmVolRange').value = vPct;
+            document.getElementById('reeditBgmVolLabel').textContent = vPct + '%';
+          }
+          if (r.hook_sfx && document.getElementById('reeditSfxSelect')) {
+            document.getElementById('reeditSfxSelect').value = r.hook_sfx;
+          }
+          if (noteBox) {
+            noteBox.classList.remove('hidden');
+            noteBox.innerHTML = `
+              <div class="font-bold flex items-center space-x-1.5 mb-0.5 text-purple-300">
+                <i class="fa-solid fa-sparkles text-xs"></i>
+                <span>Director AI Adjustments Applied:</span>
+              </div>
+              <div class="text-zinc-300">${escapeHtml(r.ai_note || 'Settings updated based on your feedback.')}</div>
+            `;
+          }
+        } else {
+          // Fallback heuristic if external AI didn't return
+          handleClientSideFeedbackFallback(feedback);
+        }
+      } catch (err) {
+        console.warn('AI feedback parsing request failed, using client heuristic:', err);
+        handleClientSideFeedbackFallback(feedback);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles text-xs"></i><span>Apply AI Feedback</span>';
+        }
+      }
+    }
+
+    function handleClientSideFeedbackFallback(feedback) {
+      const lower = feedback.toLowerCase();
+      const noteBox = document.getElementById('reeditAINoteBox');
+      let notes = [];
+
+      // Check for split / streamer / facecam
+      if (lower.includes('streamer') || lower.includes('split') || lower.includes('face') || lower.includes('cam')) {
+        selectReEditFraming('split-streamer');
+        notes.push('Switched framing to Streamer Split-Screen (Facecam on top)');
+      } else if (lower.includes('blur') || lower.includes('pillar') || lower.includes('fill') || lower.includes('black bars')) {
+        selectReEditFraming('pillarbox');
+        notes.push('Switched framing to Blurred Background Fill');
+      } else if (lower.includes('full') || lower.includes('action') || lower.includes('crop') || lower.includes('zoom')) {
+        selectReEditFraming('crop-fullscreen');
+        notes.push('Switched framing to 9:16 Action Fullscreen Crop');
+      }
+
+      // Check for caption themes
+      if (lower.includes('mrbeast') || lower.includes('green') || lower.includes('lime')) {
+        document.getElementById('reeditThemeSelect').value = 'mrbeast';
+        notes.push('Applied MrBeast Lime captions');
+      } else if (lower.includes('hormozi') || lower.includes('yellow') || lower.includes('gold')) {
+        document.getElementById('reeditThemeSelect').value = 'hormozi';
+        notes.push('Applied Hormozi Gold captions');
+      } else if (lower.includes('cyber') || lower.includes('cyan') || lower.includes('blue')) {
+        document.getElementById('reeditThemeSelect').value = 'cyber';
+        notes.push('Applied Cyber Cyan captions');
+      } else if (lower.includes('crimson') || lower.includes('red')) {
+        document.getElementById('reeditThemeSelect').value = 'crimson';
+        notes.push('Applied Crimson Red captions');
+      }
+
+      // Check for trims
+      const trimMatch = lower.match(/trim\\s*(?:first|start)?\\s*(\\d+(?:\\.\\d+)?)\\s*s/);
+      if (trimMatch) {
+        const delta = parseFloat(trimMatch[1]);
+        const sInp = document.getElementById('reeditStartInput');
+        sInp.value = ((parseFloat(sInp.value) || 0) + delta).toFixed(1);
+        updateReEditDurationDisplay();
+        notes.push(`Trimmed start by +${delta}s`);
+      }
+
+      // Check for audio BGM
+      const bgmEl = document.getElementById('reeditBgmSelect');
+      if (bgmEl) {
+        if (lower.includes('romantic') || lower.includes('love') || lower.includes('crush') || lower.includes('sweet') || lower.includes('emotional') || lower.includes('girlfriend') || lower.includes('dating')) {
+          bgmEl.value = 'romantic_piano';
+          notes.push('Added Romantic Acoustic Piano music');
+        } else if (lower.includes('intense') || lower.includes('cinematic') || lower.includes('war') || lower.includes('trailer') || lower.includes('battle') || lower.includes('epic action')) {
+          bgmEl.value = 'intense_cinematic';
+          notes.push('Added Intense Cinematic War Drums');
+        } else if (lower.includes('phonk')) {
+          bgmEl.value = 'phonk_drift';
+          notes.push('Added 140BPM Phonk Drift music');
+        } else if (lower.includes('tension') || lower.includes('cop') || lower.includes('suspense')) {
+          bgmEl.value = 'dark_tension';
+          notes.push('Added Dark Tension Synth music');
+        } else if (lower.includes('hype') || lower.includes('trap') || lower.includes('epic')) {
+          bgmEl.value = 'epic_hype';
+          notes.push('Added Epic Trap Hype music');
+        } else if (lower.includes('lofi') || lower.includes('chill')) {
+          bgmEl.value = 'lofi_chill';
+          notes.push('Added Lo-Fi Story Chill music');
+        } else if (lower.includes('funny') || lower.includes('comedy') || lower.includes('quirky')) {
+          bgmEl.value = 'quirky_bounce';
+          notes.push('Added Quirky Comedy Bounce music');
+        } else if (lower.includes('no music') || lower.includes('mute music') || lower.includes('remove music')) {
+          bgmEl.value = 'none';
+          notes.push('Muted background music');
+        }
+      }
+
+      // Check for SFX
+      const sfxEl = document.getElementById('reeditSfxSelect');
+      if (sfxEl) {
+        if (lower.includes('romantic') || lower.includes('sparkle') || lower.includes('sweet')) {
+          sfxEl.value = 'romantic_sparkle';
+          notes.push('Added Romantic Sparkle & Chime SFX');
+        } else if (lower.includes('heartbeat') || lower.includes('thud')) {
+          sfxEl.value = 'heartbeat_thud';
+          notes.push('Added Intense Heartbeat Thud SFX');
+        } else if (lower.includes('boom') || lower.includes('vine boom')) {
+          sfxEl.value = 'vine_boom';
+          notes.push('Added Vine Boom impact SFX');
+        } else if (lower.includes('whoosh') || lower.includes('riser')) {
+          sfxEl.value = 'whoosh_riser';
+          notes.push('Added Cinematic Whoosh Riser SFX');
+        } else if (lower.includes('ding') || lower.includes('pop') || lower.includes('bell')) {
+          sfxEl.value = 'pop_ding';
+          notes.push('Added Crystal Pop & Bell Ding SFX');
+        } else if (lower.includes('scratch')) {
+          sfxEl.value = 'record_scratch';
+          notes.push('Added Record Scratch SFX');
+        } else if (lower.includes('no sfx') || lower.includes('mute sfx')) {
+          sfxEl.value = 'none';
+          notes.push('Disabled hook SFX');
+        }
+      }
+
+      // Check if user requested internet search
+      if (lower.includes('internet') || lower.includes('web') || lower.includes('fetch') || lower.includes('online')) {
+        let q = feedback.replace(/(from|on|the|internet|web|online|fetch|search|sound|music|audio|add)/gi, '').trim();
+        if (q) {
+          quickAudioSearch(q, 'bgm');
+          notes.push(`Searching internet for "${q}"`);
+        }
+      }
+
+      if (noteBox) {
+        noteBox.classList.remove('hidden');
+        noteBox.innerHTML = `
+          <div class="font-bold flex items-center space-x-1.5 mb-0.5 text-purple-300">
+            <i class="fa-solid fa-sparkles text-xs"></i>
+            <span>Heuristic Adjustments Applied:</span>
+          </div>
+          <div class="text-zinc-300">${escapeHtml(notes.join(' • ') || 'Feedback processed')}</div>
+        `;
+      }
+    }
+
+    async function generateReEditTitleWithAI() {
+      if (!currentReEditClip) return;
+      const s = parseFloat(document.getElementById('reeditStartInput').value) || 0;
+      const e = parseFloat(document.getElementById('reeditEndInput').value) || 30;
+      const dur = (e - s).toFixed(1);
+      const titleInp = document.getElementById('reeditTitleInput');
+      const tagsInp = document.getElementById('reeditTagsInput');
+
+      try {
+        const res = await fetch('/api/regenerate-metadata', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            is_final: currentReEditClip.folder === 'final',
+            filename: currentReEditClip.filename,
+            id: currentReEditClip.id,
+            hook: currentReEditClip.hook,
+            text: currentReEditClip.hook,
+            timestamps: `${s.toFixed(1)}s - ${e.toFixed(1)}s (${dur}s)`,
+            variation: Math.floor(Math.random() * 10) + 1,
+            video_title: window.__sourceTitle || ''
+          })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          if (titleInp && data.title) titleInp.value = data.title;
+          if (tagsInp && data.hashtags) tagsInp.value = data.hashtags;
+        }
+      } catch (err) {
+        console.warn('Failed to regenerate re-edit title:', err);
+      }
+    }
+
+    async function submitReRenderClip() {
+      if (!currentReEditClip) return;
+      const startSec = parseFloat(document.getElementById('reeditStartInput').value) || 0.0;
+      const endSec = parseFloat(document.getElementById('reeditEndInput').value) || 0.0;
+
+      if (endSec <= startSec) {
+        alert('End time must be greater than start time.');
+        return;
+      }
+      if (endSec - startSec < 3.0) {
+        alert('Reel duration must be at least 3 seconds.');
+        return;
+      }
+
+      const payload = {
+        clip_id: currentReEditClip.id,
+        folder: currentReEditClip.folder || 'draft',
+        start: startSec,
+        end: endSec,
+        framing_mode: currentReEditFraming || 'split-streamer',
+        subtitle_theme: document.getElementById('reeditThemeSelect').value,
+        subtitle_format: document.getElementById('reeditFormatSelect').value,
+        subtitle_position: document.getElementById('reeditPositionSelect').value,
+        bgm_track: document.getElementById('reeditBgmSelect') ? document.getElementById('reeditBgmSelect').value : 'auto',
+        bgm_volume: document.getElementById('reeditBgmVolRange') ? (parseInt(document.getElementById('reeditBgmVolRange').value, 10) / 100.0) : 0.16,
+        hook_sfx: document.getElementById('reeditSfxSelect') ? document.getElementById('reeditSfxSelect').value : 'whoosh_riser',
+        title: document.getElementById('reeditTitleInput').value.trim() || `Clip #${currentReEditClip.id}`,
+        hashtags: document.getElementById('reeditTagsInput').value.trim() || '#Shorts #Viral',
+        hook: currentReEditClip.hook || ''
+      };
+
+      const btn = document.getElementById('reeditSubmitBtn');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-sm"></i><span>Queueing Re-Render...</span>';
+      }
+
+      try {
+        const res = await fetch('/api/re-render-clip', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          closeReEditModal();
+          alert(`✓ Re-rendering started for Clip #${payload.clip_id}!\\n\\nLayout: ${payload.framing_mode}\\nDuration: ${(endSec - startSec).toFixed(1)}s\\nCaptions: ${payload.subtitle_theme}\\n\\nRendering in background. You will see progress in the clips grid.`);
+          pollStatus();
+        } else {
+          alert('Failed to start re-render: ' + (data.error || data.detail || 'Server error'));
+        }
+      } catch (err) {
+        alert('Network error submitting re-render: ' + err.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles text-sm"></i><span>Re-Render Reel with Changes</span>';
+        }
+      }
     }
 
     initSourcePlayerListeners();
     startPolling();
     checkYouTubeStatus();
+    loadAIConfig();
   </script>
 </body>
 </html>
 """
 
 def main():
-    candidate_ports = [8888, 7860, 9090, 8080]
+    candidate_ports = [8895, 8890, 8888, 7860, 9090, 8080]
     httpd = None
-    chosen_port = 8888
+    chosen_port = 8895
+    http.server.ThreadingHTTPServer.allow_reuse_address = False
     for p in candidate_ports:
         try:
             server_address = ("127.0.0.1", p)
@@ -4914,19 +7064,19 @@ def main():
             continue
 
     if not httpd:
-        print("[ERROR] Could not bind to any candidate port.")
+        print("[ERROR] Could not bind to any candidate port.", flush=True)
         sys.exit(1)
 
-    print("=" * 70)
-    print("🌐 UNIVERSAL CLIPPER STUDIO WEB UI")
-    print("=" * 70)
-    print(f"Server running at: http://localhost:{chosen_port}  (or http://127.0.0.1:{chosen_port})")
-    print("Press Ctrl+C to stop.")
-    print("=" * 70)
+    print("=" * 70, flush=True)
+    print("🌐 UNIVERSAL CLIPPER STUDIO WEB UI", flush=True)
+    print("=" * 70, flush=True)
+    print(f"Server running at: http://localhost:{chosen_port}  (or http://127.0.0.1:{chosen_port})", flush=True)
+    print("Press Ctrl+C to stop.", flush=True)
+    print("=" * 70, flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\nStopping server...")
+        print("\nStopping server...", flush=True)
         httpd.server_close()
 
 if __name__ == "__main__":
